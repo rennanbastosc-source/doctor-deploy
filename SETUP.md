@@ -89,7 +89,7 @@ Rails.application.eager_load!
 Dir[File.join(__dir__, "**/*_test.rb")].each { |file| require file }
 ```
 
-O mutant precisa de `fork()`: no Windows a camada pula (use WSL).
+Ponha `.mutant/` no `.gitignore`: o mutant grava resultados lá, e a árvore suja recusa o próximo recibo. O mutant precisa de `fork()`: no Windows a camada pula (use WSL).
 
 ## 5. Hook
 
