@@ -308,6 +308,52 @@ mut Killed 2 green
 mut Ignored 2 green
 mut Survived 1 green
 
+# agnóstico, Go: quality em scripts/quality.sh, coverprofile, import de pacote pelo go.mod, sqlmock
+newrepo() { mkdir -p "$TMP/$1" && cd "$TMP/$1" && git init -qb main && git config user.email t@example.com && git config user.name t; }
+layer() { "$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q "\"$1\": \"$2\"" || { echo "$3" >&2; exit 1; }; }
+newrepo gorepo
+printf 'module example.com/loja\n\ngo 1.22\n' > go.mod
+mkdir -p internal/db internal/pedido scripts
+printf 'package db\n\nimport "database/sql"\n\ntype Store struct{ DB *sql.DB }\n' > internal/db/db.go
+printf 'package pedido\n\nimport "example.com/loja/internal/db"\n\nvar S *db.Store\n\nfunc Total(v int) int {\n\treturn v\n}\n' > internal/pedido/service.go
+printf 'package pedido\n\nimport "testing"\n\nfunc TestTotal(t *testing.T) {}\n' > internal/pedido/service_test.go
+printf '#!/bin/sh\ntrue\n' > scripts/quality.sh
+git add -A && git commit -qm base && git update-ref refs/remotes/origin/main HEAD
+"$GATE" preflight 2>&1 | grep -q "ok: quality = sh scripts/quality.sh"
+printf 'package pedido\n\nimport "example.com/loja/internal/db"\n\nvar S *db.Store\n\nfunc Total(v int) int {\n\tif v > 100 {\n\t\treturn v * 9 / 10\n\t}\n\treturn v\n}\n' > internal/pedido/service.go
+git commit -qam desconto
+printf 'mode: set\nexample.com/loja/internal/pedido/service.go:7.24,8.13 1 1\nexample.com/loja/internal/pedido/service.go:8.13,10.3 1 0\nexample.com/loja/internal/pedido/service.go:11.2,11.10 1 1\n' > coverage.out
+layer diff_cover red "Go: linha nova com hits 0 no coverprofile não ficou vermelha"
+layer integration red "Go: service que importa o pacote do banco passou sem teste de integração"
+printf 'package pedido\n\nimport _ "github.com/DATA-DOG/go-txdb"\n' > internal/pedido/service_integration_test.go
+printf 'package pedido\n\nfunc mock() { db, m, _ := sqlmock.New(); _ = db; _ = m }\n' > internal/pedido/repo_test.go
+git add internal && git commit -qm testes
+layer integration green "Go: teste txdb na pasta do pacote não cobriu o service"
+layer mocks red "Go: sqlmock não ficou vermelho"
+
+# agnóstico, Rails: constantes do Zeitwerk, request spec -> controller -> service, stub do ActiveRecord, SimpleCov
+newrepo rbrepo
+mkdir -p app/models app/controllers app/services/pagamentos spec/requests spec/services/pagamentos coverage
+printf 'class Pedido < ApplicationRecord\nend\n' > app/models/pedido.rb
+printf 'class PedidosController < ApplicationController\n  def create\n    Pagamentos::Cobrar.new(Pedido.create!).call\n  end\nend\n' > app/controllers/pedidos_controller.rb
+printf 'module Pagamentos\n  class Cobrar\n    def call\n      true\n    end\n  end\nend\n' > app/services/pagamentos/cobrar.rb
+git add -A && git commit -qm base && git update-ref refs/remotes/origin/main HEAD
+printf 'module Pagamentos\n  class Cobrar\n    def call\n      @pedido.update!(pago: true)\n    end\n  end\nend\n' > app/services/pagamentos/cobrar.rb
+git commit -qam cobranca
+layer integration red "Rails: service tocado sem spec com banco real passou"
+printf 'require "rails_helper"\n\nRSpec.describe "Pedidos", type: :request do\n  it { post "/pedidos" }\nend\n' > spec/requests/pedidos_spec.rb
+git add spec && git commit -qm request
+layer integration green "Rails: request spec não cobriu o service pelo controller"
+printf 'require "spec_helper"\n\nRSpec.describe Pagamentos::Cobrar do\n  it { allow(Pedido).to receive(:find) }\nend\n' > spec/services/pagamentos/cobrar_spec.rb
+git add spec && git commit -qm stub
+layer mocks red "Rails: stub de Pedido.find não ficou vermelho"
+# caminho absoluto nativo, como o SimpleCov grava (C:/... no Windows)
+R=$(git rev-parse --show-toplevel)
+printf '{"RSpec":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1,1,1,0,null,null,null]}}}}' "$R" > coverage/.resultset.json
+layer diff_cover red "Rails: linha nova com 0 no SimpleCov não ficou vermelha"
+printf '{"RSpec":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1,1,1,1,null,null,null],"branches":{"[:if, 0, 4, 6, 4, 30]":{"[:then, 1, 4, 6, 4, 20]":0}}}}}}' "$R" > coverage/.resultset.json
+layer diff_cover red "Rails: branch não exercitada no SimpleCov não ficou vermelha"
+
 # hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
 mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"
 git init -b main >/dev/null

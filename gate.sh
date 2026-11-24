@@ -35,12 +35,22 @@ quality_entry() {
       return
     fi
   fi
+  has_make=0
   if [ -f Makefile ] && grep -q '^quality:' Makefile; then
-    echo "make quality"
-    return
+    if command -v make >/dev/null 2>&1; then
+      echo "make quality"
+      return
+    fi
+    has_make=1
   fi
-  if [ -f scripts/quality.py ]; then
+  # Agnóstico: Go, Rails e o que mais vier sem make (Windows) usam um script POSIX.
+  if [ -f scripts/quality.sh ]; then
+    echo "sh scripts/quality.sh"
+  elif [ -f scripts/quality.py ]; then
     echo "$PYTHON scripts/quality.py"
+  elif [ "$has_make" = 1 ]; then
+    # Sem make instalado: falha alto (127) em vez de virar "sem entrypoint".
+    echo "make quality"
   fi
 }
 
@@ -56,11 +66,11 @@ run_quality() {
   q=$(quality_entry)
   if [ -n "$q" ]; then
     echo "[doctor-deploy] quality: $q" >&2
-    # Sem aspas de propósito: o comando é "gerenciador run quality" ou "python scripts/quality.py".
+    # Sem aspas de propósito: o comando é "gerenciador run quality", "sh scripts/quality.sh" etc.
     $q
     return $?
   fi
-  echo "[doctor-deploy] nenhum entrypoint (npm/pnpm/bun/yarn quality, make quality, scripts/quality.py) — quality pulado" >&2
+  echo "[doctor-deploy] nenhum entrypoint (npm/pnpm/bun/yarn quality, make quality, scripts/quality.sh, scripts/quality.py) — quality pulado" >&2
   # Variável, não código de saída: make sai 2 e um script pode sair com qualquer código.
   quality_skipped=1
   return 0
@@ -98,11 +108,16 @@ case "$cmd" in
     red=0
     q=$(quality_entry)
     if [ -n "$q" ]; then
-      echo "[doctor-deploy] ok: quality = $q" >&2
+      if [ "$q" = "make quality" ] && ! command -v make >/dev/null 2>&1; then
+        echo "[doctor-deploy] VERMELHO: Makefile tem quality, mas make não está instalado; instale-o ou crie scripts/quality.sh" >&2
+        red=1
+      else
+        echo "[doctor-deploy] ok: quality = $q" >&2
+      fi
     elif [ "$(git config --bool --get doctor-deploy.allowNoQuality || true)" = true ]; then
       echo "[doctor-deploy] aviso: sem entrypoint de quality (liberado por doctor-deploy.allowNoQuality)" >&2
     else
-      echo "[doctor-deploy] VERMELHO: sem entrypoint de quality (npm/pnpm/bun/yarn quality, make quality, scripts/quality.py)" >&2
+      echo "[doctor-deploy] VERMELHO: sem entrypoint de quality (npm/pnpm/bun/yarn quality, make quality, scripts/quality.sh, scripts/quality.py)" >&2
       red=1
     fi
     hook=$(git rev-parse --git-common-dir)/hooks/pre-push

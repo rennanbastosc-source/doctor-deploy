@@ -2,11 +2,11 @@
 
 Leia quando `gate.sh preflight` reprovar. O setup só termina quando o `preflight` sai verde **e** um `quality` real gerou o artefato de cobertura. Não existe marca de "setup feito": o preflight verde é a prova.
 
-Modelos: `frota-impacto` (Next + npm + eslint + Prisma) e `erp-2f` (TanStack Start + bun + biome + Drizzle/libsql). O corpo é o mesmo; muda o runtime. Monte com as ferramentas que o repo já tem. Não adicione framework de teste, linter ou runner se o repo já tem um.
+Modelos: `frota-impacto` (Next + npm + eslint + Prisma) e `erp-2f` (TanStack Start + bun + biome + Drizzle/libsql). O corpo é o mesmo; muda o runtime. Em Go e Rails vale o mesmo contrato com as ferramentas da linguagem (tabela da seção 1). Monte com as ferramentas que o repo já tem. Não adicione framework de teste, linter ou runner se o repo já tem um.
 
 ## 1. O `quality`
 
-Um entrypoint na raiz, na ordem que o `gate.sh` procura: `scripts.quality` no `package.json`, `make quality` ou `scripts/quality.py`. Etapas encadeadas com `&&`, da mais rápida para a mais lenta, para o vermelho aparecer cedo:
+Um entrypoint na raiz, na ordem que o `gate.sh` procura: `scripts.quality` no `package.json`, `make quality` (só se o `make` existir na máquina), `scripts/quality.sh` (POSIX, roda no sh do Git no Windows) ou `scripts/quality.py`. Fora de JS, prefira `scripts/quality.sh`: o Windows não tem `make`. Etapas encadeadas com `&&`, da mais rápida para a mais lenta, para o vermelho aparecer cedo:
 
 1. **Estático** — lint/format, com a regra de complexidade do linter em 15 quando ela existe (`complexity: ["error", 15]` no eslint). O biome só tem complexidade cognitiva, que é outra métrica: lá vale a camada `cc` da skill (lizard).
 2. **Tipos** — `tsc --noEmit`, `mypy`, `go vet`.
@@ -17,11 +17,15 @@ Um entrypoint na raiz, na ordem que o `gate.sh` procura: `scripts.quality` no `p
 |---|---|---|
 | `quality` | `npm run typecheck && eslint && npm run build && vitest run --coverage` | `bun --bun run check && bun --bun run typecheck && bun --bun run build && bun --bun run test:coverage` |
 
+| | Go | Rails |
+|---|---|---|
+| `scripts/quality.sh` | `test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test -coverprofile=coverage.out ./...` | `bundle exec rubocop && bin/rails db:test:prepare && bundle exec rspec` (ou `bin/rails test`), com SimpleCov ligado no `spec_helper`/`test_helper` (`enable_coverage :branch`) |
+
 **Sem segredos e sem banco externo.** O `quality` roda igual na máquina e num CI que só faça `install && quality` (o `ci.yml` do frota é exatamente isso). Variável de ambiente que o build exige ganha um valor dummy no próprio config, não um segredo.
 
 ## 2. Cobertura
 
-- Formato que a camada diff-cover lê: `coverage/lcov.info` (ou Cobertura XML). No vitest: `provider: "v8"`, `reporter: [..., "lcov"]`.
+- Formatos que a camada diff-cover lê: `coverage/lcov.info`, Cobertura XML, o coverprofile do Go (`coverage.out`, sem branches) e o `coverage/.resultset.json` do SimpleCov (linhas e, com `enable_coverage :branch`, branches). No vitest: `provider: "v8"`, `reporter: [..., "lcov"]`.
 - Denominador explícito: `include` dos fontes (`src/**/*.{ts,tsx}`), `exclude` de teste, gerado e `.d.ts`. Sem `include`, só o importado entra.
 - **Piso global = o valor medido no primeiro run, arredondado para baixo**, em `thresholds`. Só sobe. Nunca uma meta inventada: piso acima do real deixa o repo vermelho no dia 1 e empurra para teste cosmético.
 - **No diff, a barra é 100% de linhas e de branches**, e quem cobra é a camada diff-cover da skill, não o `thresholds`. Linha alterada com hits 0 ou com branch não exercitada é vermelho.
@@ -50,6 +54,8 @@ Cobertura mede execução, não verificação. Um teste que mocka o banco execut
   - erp-2f: `createDb(":memory:")` + `migrate(db, { migrationsFolder: "./drizzle" })`, injetado com `vi.doMock("#/db/index", ...)` (ver `src/integrations/trpc/__tests__/obras.test.ts`).
   - frota-impacto (Prisma + Postgres): `tests/helpers/pglite-db.ts` sobe um PGlite com o schema do Prisma (`prisma migrate diff --from-empty`) mais `prisma/sql/*.sql`, e o teste injeta o client no seam de `@/lib/prisma` (ver `src/services/ai/rag.service.test.ts`). Sem Docker, sem Neon, sem segredo; ~4s por arquivo.
   - Outro Postgres: o mesmo PGlite (adapter `pglite-prisma-adapter` ou `drizzle-orm/pglite`). Docker disponível: testcontainers.
+  - Rails: o banco de teste do próprio Rails já é real (`rails_helper`/`ActiveSupport::TestCase`, transação por teste). Request spec entra pela rota e chega no model; não stube `find`/`where`/`save`/`update!`.
+  - Go: Postgres de teste com `go-txdb` (transação com rollback por teste), `pgtestdb`, `embedded-postgres` ou testcontainers; SQLite `:memory:` quando o app é SQLite. Sem `sqlmock`. O teste fica na pasta do pacote (ou atrás de `//go:build integration`).
 - **Prove que o teste pega o bug:** quebre a regra no código (tire um filtro do `WHERE`, troque um limite) e veja o teste ficar vermelho. No frota, o teste antigo do RAG, com `$queryRaw` mockado, passava com o filtro de papel removido; o de integração falha.
 - **Mock só na fronteira:** rede e SaaS de terceiros, relógio, aleatoriedade, runtime do framework (`next/navigation`, `next/cache`), toasts.
 - **Cada bug de produção corrigido ganha um teste que falha sem a correção.**

@@ -36,6 +36,9 @@ AUDIT = {
     "yarn.lock": ["yarn", "audit", "--level", "high"],
     "bun.lock": ["bun", "audit"],
     "bun.lockb": ["bun", "audit"],
+    "go.sum": ["govulncheck", "./..."],
+    "Gemfile.lock": ["bundle-audit", "check", "--update"],
+    "Cargo.lock": ["cargo-audit", "audit"],
 }
 def git(*args, check=True):
     # UTF-8 explícito: sem PYTHONUTF8 o Windows decodifica em cp1252 e quebra em acento.
@@ -196,10 +199,78 @@ def parse_cobertura(text, repo):
     return cov, br
 
 
+def go_module(repo):
+    try:
+        found = re.search(r"^module\s+(\S+)", (repo / "go.mod").read_text(encoding="utf-8"), re.MULTILINE)
+    except OSError:
+        return None
+    return found.group(1) if found else None
+
+
+def parse_gocover(text, repo):
+    """coverprofile do `go test`: "mod/pkg/f.go:12.13,14.3 1 0". Sem branches; linha = maior hits dos blocos."""
+    module = go_module(repo) or ""
+    cov = {}
+    for line in text.splitlines():
+        found = re.match(r"(.+\.go):(\d+)\.\d+,(\d+)\.\d+ \d+ (\d+)$", line.strip())
+        if not found:
+            continue
+        name, start, end, hits = found.group(1), int(found.group(2)), int(found.group(3)), int(found.group(4))
+        if module and name.startswith(module + "/"):
+            name = name[len(module) + 1 :]
+        lines = cov.setdefault(norm(name, repo), {})
+        for num in range(start, end + 1):
+            lines[num] = max(lines.get(num, 0), hits)
+    return cov, {}
+
+
+def parse_simplecov(text, repo):
+    """coverage/.resultset.json do SimpleCov: {suite: {coverage: {arquivo: {lines, branches}}}}."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}, {}
+    cov, br = {}, {}
+    for suite in data.values():
+        for name, entry in ((suite or {}).get("coverage") or {}).items():
+            path = norm(name, repo)
+            lines = entry.get("lines", []) if isinstance(entry, dict) else entry
+            target = cov.setdefault(path, {})
+            for idx, hits in enumerate(lines or []):
+                if hits is not None:
+                    target[idx + 1] = max(target.get(idx + 1, 0), int(hits))
+            if isinstance(entry, dict):
+                simplecov_branches(entry.get("branches") or {}, br.setdefault(path, {}))
+    return cov, br
+
+
+def simplecov_branches(branches, target):
+    """"[:if, 0, 5, 4, 7, 7]" -> {"[:then, 1, 6, 6, 6, 10]": hits}; o 3º campo é a linha."""
+    for arms in branches.values():
+        for key, hits in arms.items():
+            found = re.match(r"\[:\w+, -?\d+, (\d+)", key)
+            if found and not hits:
+                num = int(found.group(1))
+                target[num] = target.get(num, 0) + 1
+
+
 COVERAGE_FILES = [
     "coverage/lcov.info", "lcov.info",
     "coverage/cobertura-coverage.xml", "coverage/cobertura.xml", "cobertura.xml",
+    "coverage.out", "cover.out", "coverage/coverage.out",  # go test -coverprofile
+    "coverage/.resultset.json",  # SimpleCov (Ruby)
 ]
+
+
+def parse_coverage(artifact, repo):
+    text = artifact.read_text(errors="replace")
+    if artifact.suffix == ".xml":
+        return parse_cobertura(text, repo)
+    if artifact.suffix == ".json":
+        return parse_simplecov(text, repo)
+    if artifact.suffix == ".out":
+        return parse_gocover(text, repo)
+    return parse_lcov(text, repo)
 
 
 def fresh_coverage(repo, started):
@@ -238,8 +309,7 @@ def coverage_layer(repo, base, started, warnings):
     if artifact is None:
         warnings.append("diff-cover: sem lcov/cobertura fresco, skip")
         return "skip"
-    text = artifact.read_text(errors="replace")
-    cov, br = parse_cobertura(text, repo) if artifact.suffix == ".xml" else parse_lcov(text, repo)
+    cov, br = parse_coverage(artifact, repo)
     red = False
     for status, paths in name_status(base):
         path = paths[-1]
@@ -340,7 +410,20 @@ MOCK_JS = re.compile(r"""\b(?:vi|jest)\.(?:mock|doMock)\(\s*['"]([^'"]+)['"]""")
 MOCK_PY = re.compile(r"""\bpatch\(\s*['"]([^'"]+)['"]""")
 DB_MODULE = re.compile(r"(^|[/.])(db|prisma|database|drizzle)([/.]index)?$")
 # Banco real injetado pelo mock (padrão do erp-2f: libsql :memory: + migrate) não é mock de banco.
-REAL_DB = re.compile(r"migrate\(|:memory:|pglite|testcontainers", re.IGNORECASE)
+# Rails: rails_helper/TestCase sobem o banco de teste real. Go: txdb, pgtestdb, embedded-postgres.
+REAL_DB = re.compile(
+    r"migrate\(|:memory:|pglite|testcontainers|rails_helper|ActiveSupport::TestCase|ActionDispatch::IntegrationTest"
+    r"|txdb|pgtestdb|embedded.?postgres",
+    re.IGNORECASE,
+)
+# Mock do banco sem seam para injetar banco real: stub de query/persistência do ActiveRecord, sqlmock do Go.
+AR_METHODS = (
+    r"find|find_by!?|where|create!?|save!?|update!?|update_all|destroy!?|delete_all|all|first|last"
+    r"|pluck|exists\?|transaction|insert_all|upsert_all|find_or_create_by!?"
+)
+MOCK_DB_LINE = re.compile(rf"\breceive(?:_messages)?\(\s*:(?:{AR_METHODS})\b|\bsqlmock\.New")
+# Ruby: allow(Pedido) / expect(Pagamentos::Cobrar).to receive -> constante própria mockada.
+MOCK_RB = re.compile(r"\b(?:allow|expect)(?:_any_instance_of)?\(\s*([A-Z]\w*(?:::[A-Z]\w*)*)\s*\)\.to\s+receive")
 
 
 def internal_target(target, repo):
@@ -377,12 +460,22 @@ def mocks_layer(repo, base, warnings):
         lines = text.splitlines()
         for num in added_lines(base, path):
             line = lines[num - 1] if 0 < num <= len(lines) else ""
-            for found in (*MOCK_JS.findall(line), *MOCK_PY.findall(line)):
-                finding = mock_finding(found, path, text, repo, graph)
-                if finding:
-                    red = red or finding[0]
-                    warnings.append(f"mocks: {path}:{num} {finding[1]}")
+            for is_red, msg in line_mock_findings(line, path, text, repo, graph):
+                red = red or is_red
+                warnings.append(f"mocks: {path}:{num} {msg}")
     return "red" if red else "green"
+
+
+def line_mock_findings(line, path, text, repo, graph):
+    """[(vermelho?, motivo)] de uma linha adicionada num teste."""
+    if MOCK_DB_LINE.search(line):
+        return [(True, "mocka o banco (stub de query/persistência); use o banco de teste real")]
+    out = [(False, f"mocka código próprio ({const}); mock só na fronteira") for const in MOCK_RB.findall(line) if graph.resolve_rb(const)]
+    for found in (*MOCK_JS.findall(line), *MOCK_PY.findall(line)):
+        finding = mock_finding(found, path, text, repo, graph)
+        if finding:
+            out.append(finding)
+    return out
 
 
 DATA_DIRS = {"services", "service", "actions", "api", "routes", "routers", "handlers", "controllers", "repositories"}
@@ -392,6 +485,14 @@ IMPORT_SPEC = re.compile(r"""(?:\bfrom\s+|\bimport\(\s*|\brequire\(\s*|^\s*impor
 PY_IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import\b|import\s+([\w.]+))", re.MULTILINE)
 UI_INTERACTION = (re.compile(r"\brender\("), re.compile(r"\b(userEvent|fireEvent)\b"))
 RESOLVE_EXT = (".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".cjs")
+GO_IMPORT_BLOCK = re.compile(r"^import\s*\((.*?)^\)", re.MULTILINE | re.DOTALL)
+GO_IMPORT_ONE = re.compile(r'^import\s+(?:[\w.]+\s+)?"([^"]+)"', re.MULTILINE)
+GO_DB_LIB = re.compile(
+    r'"(database/sql|gorm\.io/[^"]*|github\.com/jackc/pgx[^"]*|github\.com/jmoiron/sqlx|github\.com/uptrace/bun[^"]*|entgo\.io/[^"]*)"'
+)
+RB_CONST = re.compile(r"\b[A-Z]\w*(?:::[A-Z]\w*)*")
+# Rails: o que toca o banco ou é a porta de entrada dele.
+RB_DATA_DIRS = {"models", "controllers", "services", "jobs", "graphql", "repositories", "queries", "interactors", "commands"}
 GRAPH_DEPTH = 8
 
 
@@ -448,6 +549,8 @@ class ImportGraph:
         self.repo = repo
         self.aliases = load_aliases(repo)
         self.cache = {}
+        self.module = go_module(repo)
+        self._rb = None
 
     def text(self, path):
         try:
@@ -489,12 +592,68 @@ class ImportGraph:
                     return item.as_posix()
         return None
 
+    def go_files(self, folder):
+        """Um import de Go é o pacote inteiro: todos os .go (sem _test) da pasta."""
+        return {(Path(folder) / item.name).as_posix() for item in (self.repo / folder).glob("*.go") if not item.name.endswith("_test.go")}
+
+    def imports_go(self, path, text):
+        specs = GO_IMPORT_ONE.findall(text)
+        for block in GO_IMPORT_BLOCK.findall(text):
+            specs += re.findall(r'"([^"]+)"', block)
+        found = set()
+        for spec in specs:
+            if self.module and spec.startswith(self.module + "/"):
+                found |= self.go_files(spec[len(self.module) + 1 :])
+        if path.endswith("_test.go"):
+            # O teste compila junto com o pacote da própria pasta.
+            found |= self.go_files(Path(path).parent.as_posix())
+        return found
+
+    def rb_index(self):
+        """(nome completo -> arquivo, último segmento único -> arquivo) pelo layout do Zeitwerk."""
+        if self._rb is None:
+            full, last = {}, {}
+            files = git("ls-files", "--cached", "--others", "--exclude-standard", "--", "*.rb").stdout.splitlines()
+            for item in files:
+                parts = item[:-3].split("/")
+                if parts[0] == "app" and len(parts) >= 3:
+                    rest = parts[3:] if parts[2] == "concerns" else parts[2:]
+                elif parts[0] == "lib" and len(parts) >= 2:
+                    rest = parts[1:]
+                else:
+                    continue
+                name = "::".join("".join(w.capitalize() for w in seg.split("_")) for seg in rest)
+                full[name] = item
+                last.setdefault(name.split("::")[-1], []).append(item)
+            self._rb = (full, {k: v[0] for k, v in last.items() if len(v) == 1})
+        return self._rb
+
+    def resolve_rb(self, const):
+        full, last = self.rb_index()
+        return full.get(const) or last.get(const.split("::")[-1])
+
+    def imports_rb(self, path, text):
+        names = set(RB_CONST.findall(text))
+        if is_test(path):
+            # Request/system spec não cita o controller: pedidos_spec.rb -> PedidosController.
+            stem = re.sub(r"_(spec|test)$", "", Path(path).stem)
+            camel = "".join(w.capitalize() for w in stem.split("_"))
+            names |= {camel, camel + "Controller"}
+        return {self.resolve_rb(name) for name in names} - {path}
+
+    def touches_db(self, path):
+        return path.endswith(".go") and GO_DB_LIB.search(self.text(path)) is not None
+
     def imports(self, path):
         if path not in self.cache:
             text = self.text(path)
             if path.endswith(".py"):
                 specs = [a or b for a, b in PY_IMPORT.findall(text)]
                 found = {self.resolve_py(spec, path) for spec in specs}
+            elif path.endswith(".go"):
+                found = self.imports_go(path, text)
+            elif path.endswith(".rb"):
+                found = self.imports_rb(path, text)
             else:
                 found = {self.resolve(spec, path) for spec in IMPORT_SPEC.findall(text)}
             self.cache[path] = {item for item in found if item}
@@ -525,7 +684,9 @@ def integration_kind(path, graph):
     base = os.path.basename(path)
     if parts & UI_DIRS:
         return "ui"
-    if any(is_db_module(item) for item in graph.imports(path)):
+    if graph.touches_db(path) or any(is_db_module(item) for item in graph.imports(path)):
+        return "data"
+    if path.endswith(".rb") and path.startswith("app/") and parts & RB_DATA_DIRS:
         return "data"
     if parts & DATA_DIRS or DATA_FILE.search(base) or Path(base).stem in {"route", "router"}:
         return "data"
@@ -554,6 +715,7 @@ def covered_by_integration(graph, untracked=False):
         if not kinds:
             continue
         mocked = {graph.resolve(spec, test) for spec in MOCK_JS.findall(text)}
+        mocked |= {graph.resolve_rb(const) for const in MOCK_RB.findall(text)}
         reached = graph.reach(test, skip={item for item in mocked if item})
         for kind in kinds:
             covered[kind] |= reached
@@ -665,7 +827,8 @@ def audit_layer(base, warnings):
         # retorno não-zero é achado real e o gate fica vermelho.
         has_findings = re.search(r"\d+\s+vulnerabilit", run.stdout, re.IGNORECASE) is not None
         network_failure = (not has_findings) and re.search(
-            r"\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b", run.stderr, re.IGNORECASE
+            r"\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|no such host|dial tcp|getaddrinfo|SocketError|Could not fetch)\b",
+            run.stderr, re.IGNORECASE,
         ) is not None
         if run.returncode != 0 and network_failure:
             warnings.append(f"audit: {cmd[0]} skip (rede)")
@@ -819,7 +982,7 @@ def cmd_preflight():
     say(base, f"base {base[:12]}", "sem base diferente do HEAD (origin/master, origin/main, master, main): as camadas do diff vão pular")
     cov = next((name for name in COVERAGE_FILES if (repo / name).is_file()), None)
     say(cov, f"cobertura em {cov} (o portão exige que o quality a regenere)",
-        "nenhum lcov/cobertura XML na raiz: se o quality não gerar um, o diff-cover vai pular")
+        "nenhum artefato de cobertura (lcov, Cobertura XML, coverprofile do Go, .resultset.json do SimpleCov): se o quality não gerar um, o diff-cover vai pular")
     for tool in needs_consent():
         print(f"[doctor-deploy] aviso: {tool} sem consentimento (gate.sh consent {tool} yes|no)", file=sys.stderr)
 

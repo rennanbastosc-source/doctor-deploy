@@ -33,7 +33,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 `gate.sh prepare`
 
 - Tree suja, inclusive untracked, recusa o recibo. Não commite por conta própria.
-- Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality`, `python3 scripts/quality.py`. Sem entrypoint: vermelho. A exceção é explícita e por clone: `git config doctor-deploy.allowNoQuality true`. Com ela, `quality` entra em `skipped` e o `check` só aceita esse recibo enquanto a chave existir.
+- Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality` (se o `make` existir), `sh scripts/quality.sh`, `python3 scripts/quality.py`. Sem entrypoint: vermelho. A exceção é explícita e por clone: `git config doctor-deploy.allowNoQuality true`. Com ela, `quality` entra em `skipped` e o `check` só aceita esse recibo enquanto a chave existir.
 - Antes de escrever os testes do diff: `gate.sh cc` (CC das funções novas ou alteradas, inclusive o não commitado; acima de 15, quebre a função) e depois `gate.sh integration` (módulos tocados sem teste de integração; escreva os que ele listar). Ordem completa em [SETUP.md](SETUP.md) §3.
 - Depois do quality, as camadas olham o diff contra `origin/master`, `origin/main`, `master` ou `main`. Sem fetch. Sem base, a camada é skip, não vermelho.
 - Verde grava `$(git rev-parse --git-dir)/doctor-deploy/receipt.json` com SHA testado, SHA da base, versão e camadas puladas. Imprima as puladas. Pare.
@@ -55,13 +55,13 @@ Deleção de branch não passa pelo portão e não desliga o portão dos outros 
 | Camada | Vermelho | Skip barulhento |
 |---|---|---|
 | Quality | entrypoint falhou | sem entrypoint |
-| Diff-cover | linha alterada de fonte presente no lcov/cobertura fresco com hits 0 ou com branch não exercitada | sem artefato, artefato velho, ou sem base. Arquivo fora do relatório é aviso, não verde silencioso e não vermelho |
+| Diff-cover | linha alterada de fonte presente no artefato fresco (lcov, Cobertura, coverprofile do Go, SimpleCov) com hits 0 ou com branch não exercitada | sem artefato, artefato velho, ou sem base. Arquivo fora do relatório é aviso, não verde silencioso e não vermelho |
 | Tamanho | arquivo novo de fonte acima de 400 linhas, ou editado que sai de ≤400 para >400 | teste, gerado, sem base |
 | CC | função nova com CC > 15, ou alterada que cruza 15, se `lizard` existir | sem lizard, sem aceite, teste, gerado |
-| Mocks | linha adicionada em teste que mocka o módulo de banco (sem banco real no mesmo arquivo) ou o próprio módulo testado | sem base. Mock de outro módulo próprio é aviso |
-| Integração | service, action, rota, router, controller ou repositório tocado sem teste que o importe e use banco real; componente ou hook tocado sem teste que renderize e interaja | sem base |
+| Mocks | linha adicionada em teste que mocka o módulo de banco (sem banco real no mesmo arquivo) ou o próprio módulo testado; stub de query/persistência do ActiveRecord (`receive(:find)`, `:update!`...); `sqlmock` | sem base. Mock de outro módulo próprio é aviso |
+| Integração | service, action, rota, router, controller ou repositório tocado (em Rails, também model e job; em Go, pacote que importa o banco) sem teste que o alcance e use banco real; componente ou hook tocado sem teste que renderize e interaja. "Alcança" segue imports (TS/JS, Python), pacotes do `go.mod` e constantes do Zeitwerk | sem base |
 | Lock | manifest da raiz mudou no diff e nenhum lock correspondente mudou | sem base |
-| Audit | high/critical quando o lock mudou e a ferramenta existe | ferramenta ausente, rede, lock intocado |
+| Audit | high/critical quando o lock mudou e a ferramenta existe (`npm`/`pnpm`/`yarn`/`bun audit`, `govulncheck`, `bundle-audit`, `cargo audit`) | ferramenta ausente, rede, lock intocado |
 | Mutação | mutante vivo (`Survived`/`NoCoverage`) do Stryker numa linha adicionada de fonte JS/TS. Equivalente sai com `// Stryker disable next-line <Operador>: <motivo>` | sem Stryker em `node_modules`, recusa, sem base, sem relatório, ou timeout de 180s |
 
 No diff a barra é 100% das linhas e branches que o relatório lista: hits 0 ou branch não exercitada é vermelho. Linha que o relatório não lista não é executável comprovada. O piso global é do projeto (`thresholds`), medido no setup, e só sobe.
