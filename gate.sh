@@ -77,7 +77,7 @@ case "$cmd" in
       exit 0
     fi
     mkdir -p "$common/hooks"
-    printf '#!/bin/sh\nexec %s\n' "$SKILL_DIR/pre-push.sh" > "$hook"
+    printf '#!/bin/sh\nexec "%s"\n' "$SKILL_DIR/pre-push.sh" > "$hook"
     chmod +x "$hook"
     echo "[doctor-deploy] hook instalado: $hook" >&2
     ;;
