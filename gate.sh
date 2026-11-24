@@ -4,6 +4,9 @@
 set -eu
 
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+if [ ! -f "$SKILL_DIR/layers.py" ] && [ -f "$SKILL_DIR/../../layers.py" ]; then
+  SKILL_DIR=$(CDPATH= cd -- "$SKILL_DIR/../.." && pwd)
+fi
 PY=$SKILL_DIR/layers.py
 # No Windows, `python3` pode ser o atalho da Microsoft Store: está no PATH e não roda.
 PYTHON=python3
@@ -18,6 +21,23 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "não é um repositó
 cmd=${1:-}
 shift || true
 
+case "$cmd" in
+  preflight|install-hook|cc|integration|prepare|ci|check|hook-one)
+    command -v "$PYTHON" >/dev/null 2>&1 || die "python ausente"
+    if [ "${DD_PLUGIN_FORWARDED:-0}" != 1 ]; then
+      # config-plugin-root valida .doctor-deploy.toml e resolve [plugin] root numa única chamada.
+      cfg_root=$("$PYTHON" "$PY" config-plugin-root) || exit 1
+      if [ -n "$cfg_root" ]; then
+        cfg_root=$(CDPATH= cd -- "$cfg_root" && pwd)
+        if [ "$cfg_root" != "$SKILL_DIR" ]; then
+          export DD_PLUGIN_FORWARDED=1
+          exec "$cfg_root/gate.sh" "$cmd" "$@"
+        fi
+      fi
+    fi
+    ;;
+esac
+
 tree_clean() {
   [ -z "$(git status --porcelain)" ]
 }
@@ -27,7 +47,7 @@ quality_entry() {
   root=$(git rev-parse --show-toplevel)
   (
     cd "$root"
-    if [ -f .doctor-deploy.json ] && command -v "$PYTHON" >/dev/null 2>&1; then
+    if { [ -f .doctor-deploy.toml ] || [ -f doctor-deploy.toml ]; } && command -v "$PYTHON" >/dev/null 2>&1; then
       q=$("$PYTHON" "$PY" config-quality)
       if [ -n "$q" ]; then
         echo "$q"
@@ -78,15 +98,21 @@ write_shim() {
   cat > "$1" <<EOF
 #!/bin/sh
 # doctor-deploy: shim
-for d in "\${DOCTOR_DEPLOY_HOME:-}" "$SKILL_DIR" "\$HOME/.agents/skills/doctor-deploy" "\$HOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy"; do
-  [ -n "\$d" ] && [ -f "\$d/pre-push.sh" ] && exec "\$d/pre-push.sh"
+for d in "\${DOCTOR_DEPLOY_HOME:-}" "$SKILL_DIR" "\$HOME/.agents/skills/doctor-deploy" "\$HOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy" "\$HOME/.gemini/config/plugins/doctor-deploy"; do
+  [ -n "\$d" ] && [ -f "\$d/pre-push.sh" ] && exec "\$d/pre-push.sh" "\$@"
 done
 best=
 for d in "\$HOME"/.claude/plugins/cache/*/doctor-deploy/*; do
-  [ -f "\$d/pre-push.sh" ] || continue
-  if [ -z "\$best" ] || [ "\$d/pre-push.sh" -nt "\$best/pre-push.sh" ]; then best=\$d; fi
+  if [ -f "\$d/pre-push.sh" ]; then
+    cand=\$d/pre-push.sh
+  elif [ -f "\$d/skills/doctor-deploy/pre-push.sh" ]; then
+    cand=\$d/skills/doctor-deploy/pre-push.sh
+  else
+    continue
+  fi
+  if [ -z "\$best" ] || [ "\$cand" -nt "\$best" ]; then best=\$cand; fi
 done
-[ -n "\$best" ] && exec "\$best/pre-push.sh"
+[ -n "\$best" ] && exec "\$best" "\$@"
 branches=",\${PUSH_GATE_BRANCHES:-main,master},"
 while read -r _l _ls remote _rs; do
   case "\$branches" in *",\${remote#refs/heads/},"*)
@@ -158,6 +184,11 @@ case "$cmd" in
       "$PYTHON" "$PY" discover --quality "" --quality-error "$q" "$@"
     fi
     ;;
+  init)
+    cd "$(git rev-parse --show-toplevel)"
+    command -v "$PYTHON" >/dev/null 2>&1 || die "python ausente"
+    "$PYTHON" "$PY" init "$@"
+    ;;
   preflight)
     # Confere o repo atual sem rodar nada. Só a falta de quality reprova; o resto vira skip no portão.
     cd "$(git rev-parse --show-toplevel)"
@@ -187,7 +218,7 @@ case "$cmd" in
       else
         echo "[doctor-deploy] aviso: o hook pre-push pula o scripts/pre-push.sh do projeto (apague $hook e rode gate.sh install-hook)" >&2
       fi
-    elif grep -q "doctor-deploy: shim" "$hook" || grep -qF "$SKILL_DIR/pre-push.sh" "$hook"; then
+    elif grep -q "doctor-deploy: shim" "$hook" || grep -qF "$SKILL_DIR/pre-push.sh" "$hook" || grep -q 'doctor-deploy/pre-push.sh' "$hook"; then
       echo "[doctor-deploy] ok: hook pre-push é o shim da skill" >&2
     elif [ -n "$hooks_path" ]; then
       echo "[doctor-deploy] aviso: core.hooksPath=$hooks_path e o pre-push de lá não cita a skill; confira que ele delega a ela (SETUP.md §5)" >&2
@@ -341,6 +372,6 @@ else:
     "$0" prepare
     ;;
   *)
-    die "uso: discover [--json] | preflight | cc | integration | prepare | ci [--base <ref>] [--no-quality] [--json] | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
+    die "uso: init [--force] [--project <nome>] [--plugin-root <dir>] | discover [--json] | preflight | cc | integration | prepare | ci [--base <ref>] [--no-quality] [--json] | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
     ;;
 esac

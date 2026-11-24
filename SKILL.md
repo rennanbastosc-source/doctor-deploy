@@ -11,7 +11,7 @@ description: >-
 
 # Doctor Deploy
 
-Todo `gate.sh` deste texto e do [SETUP.md](SETUP.md) é o `gate.sh` da pasta deste SKILL.md: `"$HOME/.agents/skills/doctor-deploy/gate.sh"` no clone, `"${CLAUDE_PLUGIN_ROOT}/gate.sh"` no plugin do Claude Code. Rode de dentro do repo do projeto; no Windows, pelo sh do Git: `"/c/Program Files/Git/bin/sh.exe" "<pasta da skill>/gate.sh" prepare`. Os scripts são POSIX, LF (no Windows rodam no sh do Git for Windows, o mesmo dos hooks) e chamam `python3`, ou `python` quando `python3` não roda (atalho da Microsoft Store), em modo UTF-8. Não copie esta skill para o repo. Não instale ferramenta com `pip install --user` (PEP 668 no Ubuntu).
+Todo `gate.sh` deste texto e do [SETUP.md](SETUP.md) é o `gate.sh` da raiz do plugin/skill: `"$HOME/.agents/skills/doctor-deploy/gate.sh"` no clone, `"$HOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy/gate.sh"` (com fallback direto na raiz `"$HOME/.gemini/config/plugins/doctor-deploy/gate.sh"`) no Antigravity, ou `"${CLAUDE_PLUGIN_ROOT}/gate.sh"` no Claude Code. Rode de dentro do repo do projeto; no Windows, pelo sh do Git: `"/c/Program Files/Git/bin/sh.exe" "<raiz do plugin>/gate.sh" prepare`. Os scripts são POSIX, LF (no Windows rodam no sh do Git for Windows, o mesmo dos hooks) e chamam `python3`, ou `python` quando `python3` não roda (atalho da Microsoft Store), em modo UTF-8. Não copie esta skill para o repo. Não instale ferramenta com `pip install --user` (PEP 668 no Ubuntu).
 
 O portão existe para não subir vermelho. Repetir um verde já gravado é o bug, não rigor. Um recibo válido é o verde.
 
@@ -24,7 +24,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 ## Antes de tudo
 
-0. `gate.sh preflight` — confere o repo atual sem rodar nada: entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Só a falta de quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip. **Reprovou, ou avisou de hook ou cobertura na primeira vez neste repo: rode `gate.sh discover --json`, leia [SETUP.md](SETUP.md) e monte o setup antes de seguir.** O setup termina quando o preflight sai verde e um `quality` real gerou o lcov.
+0. `gate.sh preflight` — exige `.doctor-deploy.toml` (ou `doctor-deploy.toml`) na raiz do repo e confere entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Sem `.doctor-deploy.toml` ou sem quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip. **Reprovou, ou avisou de hook ou cobertura na primeira vez neste repo: rode `gate.sh discover --json`, crie o `.doctor-deploy.toml` com `gate.sh init` (migra `.doctor-deploy.json` automaticamente se existir), leia [SETUP.md](SETUP.md) e monte o setup antes de seguir.** O setup termina quando o preflight sai verde e um `quality` real gerou o lcov.
 1. `gate.sh install-hook` — só cria o shim se `.git/hooks/pre-push` não existir. Hook de projeto não se sobrescreve.
 2. `gate.sh needs-consent` — se imprimir `NEED_CONSENT`, pergunte uma vez. `gate.sh consent lizard yes|no`: `yes` não instala sozinho: instale no usuário (`pipx` ou `uv tool`), grave a versão no consentimento, não atualize no portão. Sem `pipx`/`uv`, diga isso e deixe a camada em skip. Lizard nunca vira dependência do repo. `gate.sh consent mutation yes|no` só é perguntado quando o projeto já tem o Stryker (dependência de dev do projeto, decisão do dono no setup, [SETUP.md](SETUP.md) §4); `no` desliga a camada nesta máquina.
 
@@ -67,7 +67,7 @@ No diff a barra é 100% das linhas e branches que o relatório lista: hits 0 ou 
 
 Lock fora de sincronia com o manifest, lint, tipos e build são portões do CI: o quality os reproduz ([SETUP.md](SETUP.md) §0), a skill não os reimplementa.
 
-Tetos 400 e 15 são os padrões da skill. Overrides por repo (tetos, branch base, comando de `quality`, paths ignorados, camadas desativadas, padrões de banco/integração) ficam no manifesto opcional `.doctor-deploy.json` na raiz ([SETUP.md](SETUP.md)). Não abaixe threshold, não alargue exclude, não apague teste para passar.
+Tetos 400 e 15 são os padrões da skill. Todo repositório precisa do manifesto obrigatório `.doctor-deploy.toml` (ou `doctor-deploy.toml`) na raiz validando `project` e declarando overrides opcionais (tetos, `[plugin] root` para reencaminhar à raiz do plugin, branch base, comando de `quality`, paths ignorados, camadas desativadas, padrões de banco/integração — [SETUP.md](SETUP.md)). Não abaixe threshold, não alargue exclude, não apague teste para passar.
 
 ## Reparo
 

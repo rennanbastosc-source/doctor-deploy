@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.3 — 2026-11-24
+
+Compatibilidade nativa com plugins do Antigravity (`agy plugin install`) e marcador obrigatório em TOML:
+
+- Estrutura de plugin Antigravity + fallback na raiz: adicionados `plugin.json` na raiz e `skills/doctor-deploy/{SKILL.md,gate.sh,pre-push.sh}` reencaminhando para a raiz do plugin, permitindo `skills: ["doctor-deploy"]` no `agy plugin install` sem quebrar clones diretos em `~/.agents/skills/doctor-deploy`.
+- Shim e `SKILL.md` com fallback para a raiz: suporte tanto a `~/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy` quanto à raiz `~/.gemini/config/plugins/doctor-deploy` (e no cache do Claude Code).
+- Manifesto obrigatório `.doctor-deploy.toml` (com fallback `doctor-deploy.toml`, no estilo `.ai-memory.toml`): substitui `.doctor-deploy.json`, valida `project` e chaves antes de `preflight`/`install-hook`/`cc`/`integration`/`prepare`/`ci`/`check`/`pre-push`, adiciona `[plugin] root` para reencaminhar para a raiz do plugin e o comando `gate.sh init` (com migração automática de `.doctor-deploy.json`).
+
 ## 0.0.2 — 2026-11-24
 
 Camada agnóstica à stack de CI, autoconfigurável por agente, com suporte a monorepos e execução em CI:

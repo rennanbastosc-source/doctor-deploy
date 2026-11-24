@@ -1,0 +1,6 @@
+# Marcador e configuração obrigatória do doctor-deploy na raiz do repositório.
+version = 1
+project = "doctor-deploy"
+
+[gate]
+quality = "sh scripts/quality.sh"

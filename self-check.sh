@@ -11,16 +11,25 @@ PYTHON=python3
 WORK=$(CDPATH= cd -- "$(mktemp -d "${TMPDIR:-/tmp}/dd XXXX")" && pwd)
 trap 'rm -rf "$WORK"' EXIT
 SKILL="$WORK/skill dir"
-mkdir -p "$SKILL"
+mkdir -p "$SKILL/skills/doctor-deploy"
 cp "$SKILL_DIR/gate.sh" "$SKILL_DIR/pre-push.sh" "$SKILL_DIR/layers.py" "$SKILL"
-GATE=$SKILL/gate.sh
+cp "$SKILL_DIR/skills/doctor-deploy/gate.sh" "$SKILL_DIR/skills/doctor-deploy/pre-push.sh" "$SKILL/skills/doctor-deploy"
+GATE=$SKILL/skills/doctor-deploy/gate.sh
 PY=$SKILL/layers.py
+dd_toml() { printf 'version = 1\nproject = "%s"\n' "${1:-test-repo}" > .doctor-deploy.toml; }
 TMP=$WORK/repo
 mkdir -p "$TMP" && cd "$TMP"
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
 export CI=1
+if "$GATE" preflight >/dev/null 2>&1; then
+  echo "preflight aceitou repo sem .doctor-deploy.toml" >&2; exit 1
+fi
+if "$GATE" install-hook >/dev/null 2>&1; then
+  echo "install-hook aceitou repo sem .doctor-deploy.toml" >&2; exit 1
+fi
+dd_toml mainrepo
 "$GATE" install-hook 2>/dev/null
 HOOK=$TMP/.git/hooks/pre-push
 grep -qF "\"$SKILL\"" "$HOOK"
@@ -40,7 +49,11 @@ rm -r "$FHOME/.claude"
 mkdir -p "$FHOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy"
 printf '#!/bin/sh\necho via-antigravity >&2\n' > "$FHOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy/pre-push.sh"
 chmod +x "$FHOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy/pre-push.sh"
-: | HOME="$FHOME" "$WORK/shim" 2>&1 | grep -q via-antigravity || { echo "shim não achou o plugin do Antigravity" >&2; exit 1; }
+: | HOME="$FHOME" "$WORK/shim" 2>&1 | grep -q via-antigravity || { echo "shim não achou o plugin do Antigravity (skills/)" >&2; exit 1; }
+rm -rf "$FHOME/.gemini/config/plugins/doctor-deploy/skills"
+printf '#!/bin/sh\necho via-antigravity-root >&2\n' > "$FHOME/.gemini/config/plugins/doctor-deploy/pre-push.sh"
+chmod +x "$FHOME/.gemini/config/plugins/doctor-deploy/pre-push.sh"
+: | HOME="$FHOME" "$WORK/shim" 2>&1 | grep -q via-antigravity-root || { echo "shim não achou fallback na raiz do plugin Antigravity" >&2; exit 1; }
 rm -r "$FHOME/.gemini"
 if printf 'refs/heads/main %s refs/heads/main %s\n' "$ZERO" "$ZERO" | HOME="$FHOME" "$WORK/shim" 2>/dev/null; then
   echo "shim sem skill deixou passar push para a main" >&2; exit 1
@@ -53,7 +66,7 @@ export DD_STAMP="$WORK/stamp"
 printf '%s\n' '{"scripts":{"quality":"node stamp.js"}}' > package.json
 printf '%s\n' "require('fs').appendFileSync(process.env.DD_STAMP, '1\n')" > stamp.js
 printf '%s\n' 'export const a = 1' > src/a.ts
-git add package.json stamp.js src/a.ts
+git add .doctor-deploy.toml package.json stamp.js src/a.ts
 git commit -m 'init' >/dev/null
 SHA=$(git rev-parse HEAD)
 
@@ -118,9 +131,10 @@ mkdir -p covrepo && cd covrepo
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
+dd_toml covrepo
 mkdir -p src coverage
 printf '%s\n' 'x = 1' > src/a.py
-git add src/a.py && git commit -m a >/dev/null
+git add .doctor-deploy.toml src/a.py && git commit -m a >/dev/null
 printf '%s\n' 'x = 2' > src/a.py
 git add src/a.py && git commit -m b >/dev/null
 BASE=$(git rev-parse HEAD~1)
@@ -221,9 +235,10 @@ mkdir -p "$TMP/qrepo" && cd "$TMP/qrepo"
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
+dd_toml qrepo
 mkdir -p scripts
 printf '%s\n' 'raise SystemExit(2)' > scripts/quality.py
-git add scripts && git commit -m a >/dev/null
+git add .doctor-deploy.toml scripts && git commit -m a >/dev/null
 if "$GATE" prepare >/dev/null 2>&1; then
   echo "quality com saída 2 não ficou vermelho" >&2
   exit 1
@@ -272,8 +287,9 @@ mkdir -p "$TMP/irepo" && cd "$TMP/irepo"
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
+dd_toml irepo
 printf '%s\n' 'x' > README.md
-git add README.md && git commit -qm base >/dev/null
+git add .doctor-deploy.toml README.md && git commit -qm base >/dev/null
 git update-ref refs/remotes/origin/main HEAD
 mkdir -p src/services src/components
 printf '%s\n' 'export const total = () => 1' > src/services/conta.service.ts
@@ -317,8 +333,9 @@ mkdir -p "$TMP/grepo" && cd "$TMP/grepo"
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
+dd_toml grepo
 printf '%s\n' 'x' > README.md
-git add README.md && git commit -qm base >/dev/null
+git add .doctor-deploy.toml README.md && git commit -qm base >/dev/null
 git update-ref refs/remotes/origin/main HEAD
 mkdir -p src/dominio src/api
 # JSONC: comentário, vírgula final e "/*" dentro de string
@@ -354,6 +371,7 @@ mkdir -p "$TMP/mrepo" && cd "$TMP/mrepo"
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
+dd_toml mrepo
 printf '%s\n' node_modules reports > .gitignore
 mkdir -p src node_modules/.bin
 printf '%s\n' 'export const a = 1' 'export const b = 2' 'export const c = 3' > src/calc.ts
@@ -379,7 +397,7 @@ mut Ignored 2 green
 mut Survived 1 green
 
 # agnóstico, Go: quality em scripts/quality.sh, coverprofile, import de pacote pelo go.mod, sqlmock
-newrepo() { mkdir -p "$TMP/$1" && cd "$TMP/$1" && git init -qb main && git config user.email t@example.com && git config user.name t; }
+newrepo() { mkdir -p "$TMP/$1" && cd "$TMP/$1" && git init -qb main && git config user.email t@example.com && git config user.name t && dd_toml "$1"; }
 layer() { "$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q "\"$1\": \"$2\"" || { echo "$3" >&2; exit 1; }; }
 newrepo gorepo
 printf 'module example.com/loja\n\ngo 1.22\n' > go.mod
@@ -472,10 +490,11 @@ mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
+dd_toml hrepo
 mkdir -p scripts
 printf '#!/bin/sh\n# delega a doctor-deploy/pre-push.sh\necho via-projeto >&2\nexec "%s"\n' "$SKILL/pre-push.sh" > scripts/pre-push.sh
 chmod +x scripts/pre-push.sh
-git add scripts && git commit -m a >/dev/null
+git add .doctor-deploy.toml scripts && git commit -m a >/dev/null
 HHOOK=$(pwd)/.git/hooks/pre-push
 mkdir -p .git/hooks
 printf '#!/bin/sh\nexec "%s"\n' "$SKILL/pre-push.sh" > "$HHOOK"
@@ -542,21 +561,65 @@ printf '%s\n' 'export const a = 1' 'export const b = 2' > src/a.ts
 git commit -qam feat
 [ -n "$("$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); import layers; print(layers.base_sha())' "$SKILL")" ] || { echo "base_sha não detectou origin/HEAD -> origin/develop" >&2; exit 1; }
 
-# .doctor-deploy.json: inválido falha alto (preflight e pre-push); overrides gerais
+# .doctor-deploy.toml: obrigatório, inválido falha alto (preflight e pre-push), fallback doctor-deploy.toml, [plugin] root, migração e overrides
 newrepo cfgrepo
 git switch -qc trunk
 mkdir -p src/legacy src/usecases src/infra scripts reports
-printf '%s\n' '{' > .doctor-deploy.json
-"$GATE" preflight 2>&1 | grep -q ".doctor-deploy.json ilegível" || { echo ".doctor-deploy.json inválido sem erro claro" >&2; exit 1; }
+rm -f .doctor-deploy.toml
+if "$GATE" preflight >/dev/null 2>&1; then
+  echo "preflight aceitou repo sem .doctor-deploy.toml" >&2; exit 1
+fi
+"$GATE" preflight 2>&1 | grep -q "obrigatório na raiz" || { echo "preflight sem .doctor-deploy.toml não avisou claro" >&2; exit 1; }
+printf '%s\n' '{}' > .doctor-deploy.json
+"$GATE" preflight 2>&1 | grep -q "substituído por .doctor-deploy.toml" || { echo ".doctor-deploy.json legado sem erro claro" >&2; exit 1; }
+rm .doctor-deploy.json
+printf '%s\n' '[' > .doctor-deploy.toml
+"$GATE" preflight 2>&1 | grep -q ".doctor-deploy.toml ilegível" || { echo ".doctor-deploy.toml inválido sem erro claro" >&2; exit 1; }
 if printf 'refs/heads/feat %s refs/heads/feat %s\n' "$ZERO" "$ZERO" | "$SKILL/pre-push.sh" 2>/dev/null; then
-  echo "pre-push deixou passar .doctor-deploy.json inválido" >&2
+  echo "pre-push deixou passar .doctor-deploy.toml inválido" >&2
   exit 1
 fi
-printf '%s\n' 'export const db = {}' > src/infra/datasource.ts
-printf '%s\n' 'export const ok = 1' > src/usecases/criar.ts
-printf '%s\n' '#!/bin/sh\necho custom-q >&2\nexit 1\n' > scripts/custom.sh
-printf '%s\n' '{}' > .doctor-deploy.json
-git add -A && git commit -qm base && git update-ref refs/remotes/origin/trunk HEAD
+printf 'version = 1\n' > .doctor-deploy.toml
+"$GATE" preflight 2>&1 | grep -q "obrigatório 'project'" || { echo ".doctor-deploy.toml sem project não falhou" >&2; exit 1; }
+# Ambiguidade: .doctor-deploy.toml + doctor-deploy.toml falha alto
+dd_toml cfgrepo
+printf 'version = 1\nproject = "cfgrepo"\n' > doctor-deploy.toml
+"$GATE" preflight 2>&1 | grep -q "uso ambíguo" || { echo "ambiguidade toml não falhou" >&2; exit 1; }
+rm .doctor-deploy.toml
+# Fallback doctor-deploy.toml (sem ponto) aceito normalmente
+"$GATE" preflight >/dev/null 2>&1 || true
+"$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); import layers
+d = layers._fallback_toml_loads("""
+# comentario
+version = 1
+project = "demo"
+[gate]
+protected_branches = ["main", "trunk"]
+quality = "sh scripts/custom.sh"
+[limits]
+size = 5
+cc = 20
+""")
+assert d["project"] == "demo" and d["limits"]["size"] == 5 and d["gate"]["protected_branches"] == ["main", "trunk"], d
+try:
+    layers._fallback_toml_loads("project = [\"x\"]]\n")
+    raise AssertionError("colchete sobrando passou")
+except ValueError:
+    pass' "$SKILL"
+rm doctor-deploy.toml
+if "$GATE" init --project >/dev/null 2>&1; then
+  echo "init aceitou --project sem valor" >&2; exit 1
+fi
+if "$GATE" init --opcao-invalida >/dev/null 2>&1; then
+  echo "init aceitou opção desconhecida" >&2; exit 1
+fi
+printf '%s\n' '{"project":123}' > .doctor-deploy.json
+if "$GATE" init 2>&1 | grep -qi "traceback"; then
+  echo "init deu traceback com project não-string no JSON legado" >&2; exit 1
+fi
+"$GATE" init 2>&1 | grep -q "project deve ser string não vazia" || { echo "init não validou project não-string no JSON legado" >&2; exit 1; }
+rm .doctor-deploy.json
+# Migração automática de .doctor-deploy.json via gate.sh init
 cat > .doctor-deploy.json <<'JSON'
 {
   "baseBranch": "trunk",
@@ -571,11 +634,32 @@ cat > .doctor-deploy.json <<'JSON'
   "disableLayers": ["size"]
 }
 JSON
-(cd src/usecases && "$GATE" preflight 2>&1 | grep -q "ok: quality = sh scripts/custom.sh") || { echo "preflight em subpasta ignorou quality do .doctor-deploy.json" >&2; exit 1; }
+"$GATE" init --project cfgrepo 2>&1 | grep -q "migrado de .doctor-deploy.json" || { echo "gate.sh init não migrou .doctor-deploy.json" >&2; exit 1; }
+rm .doctor-deploy.json
+printf '%s\n' 'export const db = {}' > src/infra/datasource.ts
+printf '%s\n' 'export const ok = 1' > src/usecases/criar.ts
+printf '%s\n' '#!/bin/sh' 'echo custom-q >&2' 'exit 1' > scripts/custom.sh
+git add -A && git commit -qm base && git update-ref refs/remotes/origin/trunk HEAD
+(cd src/usecases && "$GATE" preflight 2>&1 | grep -q "ok: quality = sh scripts/custom.sh") || { echo "preflight em subpasta ignorou quality do .doctor-deploy.toml" >&2; exit 1; }
 if printf 'refs/heads/trunk %s refs/heads/trunk %s\n' "$(git rev-parse HEAD)" "$ZERO" | "$SKILL/pre-push.sh" 2>/dev/null; then
-  echo "pre-push não protegeu protectedBranches do .doctor-deploy.json" >&2
+  echo "pre-push não protegeu protected_branches do .doctor-deploy.toml" >&2
   exit 1
 fi
+# [plugin] root: inválido falha alto; válido reencaminha pre-push.sh e gate.sh
+ALT_ROOT="$WORK/alt-plugin"
+mkdir -p "$ALT_ROOT"
+cp "$SKILL/gate.sh" "$SKILL/layers.py" "$ALT_ROOT"
+printf '#!/bin/sh\necho forwarded-to-root >&2\nexit 0\n' > "$ALT_ROOT/pre-push.sh"
+chmod +x "$ALT_ROOT/pre-push.sh"
+cp .doctor-deploy.toml "$WORK/cfg.bak"
+{ cat "$WORK/cfg.bak"; printf '\n[plugin]\nroot = "%s"\n' "$WORK/nao-existe"; } > .doctor-deploy.toml
+"$GATE" preflight 2>&1 | grep -q "plugin.root inválido" || { echo "plugin.root inválido não falhou" >&2; exit 1; }
+{ cat "$WORK/cfg.bak"; printf '\n[plugin]\nroot = "%s"\n' "$ALT_ROOT"; } > .doctor-deploy.toml
+printf 'refs/heads/feat %s refs/heads/feat %s\n' "$ZERO" "$ZERO" | "$SKILL/pre-push.sh" 2>&1 | grep -q "forwarded-to-root" || { echo "plugin.root não reencaminhou para a raiz do plugin" >&2; exit 1; }
+"$GATE" preflight 2>&1 | grep -q "ok: plugin.root ->" || { echo "preflight não confirmou plugin.root" >&2; exit 1; }
+{ cat "$WORK/cfg.bak"; printf '\n[plugin]\nroot = "../../alt-plugin"\n'; } > .doctor-deploy.toml
+printf 'refs/heads/feat %s refs/heads/feat %s\n' "$ZERO" "$ZERO" | "$SKILL/pre-push.sh" 2>&1 | grep -q "forwarded-to-root" || { echo "plugin.root relativo não reencaminhou para a raiz do plugin" >&2; exit 1; }
+mv "$WORK/cfg.bak" .doctor-deploy.toml
 printf '%s\n%s\n%s\n%s\n%s\n%s\n' 'export const a1=1' 'export const a2=2' 'export const a3=3' 'export const a4=4' 'export const a5=5' 'export const a6=6' > src/legacy/velho.ts
 printf '%s\n' 'export const x = 1' > src/usecases/ignorado.ts
 printf '%s\n' 'import { db } from "../infra/datasource"' 'export const run = () => db' > src/usecases/criar.ts
@@ -584,18 +668,19 @@ mkdir -p reports
 printf '%s\n' 'SF:src/usecases/criar.ts' 'DA:1,1' 'DA:2,1' 'end_of_record' > reports/custom.lcov
 git add -A && git commit -qm overrides
 out=$("$PYTHON" "$PY" layers --started 0)
-printf '%s\n' "$out" | grep -q '"diff_cover": "green"' || { echo "coverageFiles customizado não foi lido: $out" >&2; exit 1; }
-printf '%s\n' "$out" | grep -q '"size": "skip"' || { echo "disableLayers não pulou size: $out" >&2; exit 1; }
-printf '%s\n' "$out" | grep -q '"mocks": "green"' || { echo "realDbPatterns não liberou dbModules custom: $out" >&2; exit 1; }
-printf '%s\n' "$out" | grep -q '"integration": "green"' || { echo "integration com realDbPatterns/ignore não ficou green: $out" >&2; exit 1; }
-# limits.size = 5 sem disableLayers reprova arquivo com 6 linhas fora de ignorePaths
-sed 's/"disableLayers": \["size"\]/"disableLayers": []/' .doctor-deploy.json > .dd.tmp && mv .dd.tmp .doctor-deploy.json
+printf '%s\n' "$out" | grep -q '"diff_cover": "green"' || { echo "coverage_files customizado não foi lido: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q '"size": "skip"' || { echo "disable_layers não pulou size: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q '"mocks": "green"' || { echo "real_db_patterns não liberou db_modules custom: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q '"integration": "green"' || { echo "integration com real_db_patterns/ignore não ficou green: $out" >&2; exit 1; }
+# limits.size = 5 sem disable_layers reprova arquivo com 6 linhas fora de ignore_paths
+sed 's/"size"//' .doctor-deploy.toml > .dd.tmp && mv .dd.tmp .doctor-deploy.toml
 printf '%s\n%s\n%s\n%s\n%s\n%s\n' 'export const a1=1' 'export const a2=2' 'export const a3=3' 'export const a4=4' 'export const a5=5' 'export const a6=6' > src/grande.ts
 git add -A && git commit -qm grande
-layer size red "limits.size = 5 no .doctor-deploy.json não reprovou arquivo de 6 linhas"
+layer size red "limits.size = 5 no .doctor-deploy.toml não reprovou arquivo de 6 linhas"
 
-# discover --json: detecta stack JS/bun, scripts, CI (.github/workflows/*.yml), husky, .doctor-deploy.json e gaps
+# discover --json: funciona mesmo sem .doctor-deploy.toml (acusa gap), e lê .doctor-deploy.toml quando existe
 newrepo discrepo
+rm -f .doctor-deploy.toml
 mkdir -p .github/workflows .husky reports
 cat > .github/workflows/ci.yml <<'YAML'
 jobs:
@@ -608,15 +693,25 @@ jobs:
 YAML
 printf '%s\n' '{"scripts":{"check":"biome check","typecheck":"tsc --noEmit","test:coverage":"vitest run --coverage"}}' > package.json
 : > bun.lock
-printf '%s\n' '{"coverageFiles":["reports/lcov.info"]}' > .doctor-deploy.json
 : > reports/lcov.info
 git add -A && git commit -qm base
+HOME="$WORK/home" USERPROFILE="$WORK/home" "$GATE" discover --json > "$WORK/disc_missing.json"
+"$PYTHON" -c 'import json,sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["config"]["exists"] is False and d["config"]["required"] is True, d["config"]
+assert any(".doctor-deploy.toml" in g for g in d["gaps"]), d["gaps"]' "$WORK/disc_missing.json"
+cat > .doctor-deploy.toml <<'TOML'
+version = 1
+project = "discrepo"
+[gate]
+coverage_files = ["reports/lcov.info"]
+TOML
 HOME="$WORK/home" USERPROFILE="$WORK/home" "$GATE" discover --json > "$WORK/disc.json"
 "$PYTHON" -c 'import json,sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 assert d["stacks"]["js"]["packageManager"] == "bun", d
 assert "husky" in d["git"]["hooksManagers"], d
-assert d["config"]["exists"] is True, d
+assert d["config"]["exists"] is True and d["config"]["path"] == ".doctor-deploy.toml", d["config"]
 assert "reports/lcov.info" in d["coverage"]["artifacts"], d
 cmds = d["ci"][0]["commands"]
 assert "bun install --frozen-lockfile" in cmds and "bun --bun run test:coverage" in cmds, cmds
