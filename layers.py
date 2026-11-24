@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Camadas do diff e recibo do doctor-deploy. WSL2. Não instala nada."""
 
+import fnmatch
 import json
 import os
 import re
@@ -9,10 +10,11 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree as ET
 
 VERSION = 3
+CONFIG_FILE = ".doctor-deploy.json"
 SIZE_LIMIT = 400
 CC_LIMIT = 15
 SOURCE_EXT = {
@@ -71,9 +73,82 @@ def load_json(path):
         return None
 
 
-def base_sha():
+def repo_config(repo=None):
+    """Lê .doctor-deploy.json da raiz do repo se existir. Falha alto se inválido."""
+    base = Path(repo) if repo else root()
+    path = base / CONFIG_FILE
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"[doctor-deploy] {CONFIG_FILE} ilegível: {exc}")
+    if not isinstance(data, dict):
+        raise SystemExit(f"[doctor-deploy] {CONFIG_FILE} ilegível: esperado objeto JSON")
+    return data
+
+
+def cfg_limit(cfg, key, default):
+    limits = cfg.get("limits")
+    if not isinstance(limits, dict) or key not in limits:
+        return default
+    val = limits[key]
+    if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+        raise SystemExit(f"[doctor-deploy] {CONFIG_FILE}: limits.{key} deve ser inteiro positivo")
+    return val
+
+
+def matches_any(path, patterns):
+    for pat in patterns or ():
+        if not isinstance(pat, str) or not pat.strip():
+            continue
+        p = pat.strip().replace("\\", "/")
+        prefix = p.rstrip("/")
+        if not any(ch in p for ch in "*?[") and (path == prefix or path.startswith(prefix + "/")):
+            return True
+        if fnmatch.fnmatch(path, p) or PurePosixPath(path).match(p):
+            return True
+    return False
+
+
+def is_ignored(path, cfg=None):
+    return bool(cfg and matches_any(path, cfg.get("ignorePaths")))
+
+
+def compile_extra(base_rx, patterns, field, flags=0):
+    extras = [p for p in (patterns or ()) if isinstance(p, str) and p]
+    if not extras:
+        return base_rx
+    try:
+        return re.compile("|".join([base_rx.pattern, *(f"(?:{p})" for p in extras)]), flags)
+    except re.error as exc:
+        raise SystemExit(f"[doctor-deploy] {CONFIG_FILE}: regex inválida em {field}: {exc}")
+
+
+def base_candidates(cfg=None):
+    cfg = cfg or {}
+    refs = []
+    for raw in (os.environ.get("DOCTOR_DEPLOY_BASE") or "", cfg.get("baseBranch") or ""):
+        if isinstance(raw, str) and raw.strip():
+            b = raw.strip()
+            if "/" in b:
+                refs.append(b)
+            else:
+                refs.extend((f"origin/{b}", b))
+    sym = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False)
+    if sym.returncode == 0 and sym.stdout.strip().startswith("refs/remotes/"):
+        remote_ref = sym.stdout.strip()[len("refs/remotes/") :]
+        refs.append(remote_ref)
+        if "/" in remote_ref:
+            refs.append(remote_ref.split("/", 1)[1])
+    refs.extend(("origin/master", "origin/main", "master", "main"))
+    return list(dict.fromkeys(refs))
+
+
+def base_sha(cfg=None):
+    cfg = repo_config() if cfg is None else cfg
     head = git("rev-parse", "HEAD").stdout.strip()
-    for ref in ("origin/master", "origin/main", "master", "main"):
+    for ref in base_candidates(cfg):
         if git("rev-parse", "--verify", "--quiet", ref, check=False).returncode != 0:
             continue
         if git("rev-parse", ref).stdout.strip() == head:
@@ -126,8 +201,8 @@ def is_generated(path):
     return "set" in attr.stdout
 
 
-def is_source(path):
-    return Path(path).suffix in SOURCE_EXT and not is_test(path) and not is_generated(path)
+def is_source(path, cfg=None):
+    return Path(path).suffix in SOURCE_EXT and not is_test(path) and not is_generated(path) and not is_ignored(path, cfg)
 
 
 def blob(rev, path):
@@ -281,9 +356,14 @@ def parse_coverage(artifact, repo):
     return parse_lcov(text, repo)
 
 
-def fresh_coverage(repo, started):
+def coverage_candidates(cfg=None):
+    extra = [p for p in ((cfg or {}).get("coverageFiles") or ()) if isinstance(p, str) and p.strip()]
+    return list(dict.fromkeys([*extra, *COVERAGE_FILES]))
+
+
+def fresh_coverage(repo, started, cfg=None):
     found = []
-    for name in COVERAGE_FILES:
+    for name in coverage_candidates(cfg):
         path = repo / name
         if path.is_file() and path.stat().st_mtime >= started - 2:
             found.append(path)
@@ -322,11 +402,11 @@ def added_lines(base, path):
     return added_lines_map(base).get(path, [])
 
 
-def coverage_layer(repo, base, started, warnings):
+def coverage_layer(repo, base, started, warnings, cfg=None):
     if not base:
         warnings.append("diff-cover: sem base, skip")
         return "skip"
-    artifact = fresh_coverage(repo, started)
+    artifact = fresh_coverage(repo, started, cfg)
     if artifact is None:
         warnings.append("diff-cover: sem lcov/cobertura fresco, skip")
         return "skip"
@@ -335,7 +415,7 @@ def coverage_layer(repo, base, started, warnings):
     red = False
     for status, paths in name_status(base):
         path = paths[-1]
-        if status.startswith("D") or not is_source(path):
+        if status.startswith("D") or not is_source(path, cfg):
             continue
         if path not in cov:
             warnings.append(f"diff-cover: {path} fora do relatório")
@@ -350,24 +430,25 @@ def coverage_layer(repo, base, started, warnings):
     return "red" if red else "green"
 
 
-def size_layer(base, warnings):
+def size_layer(base, warnings, cfg=None):
     if not base:
         warnings.append("tamanho: sem base, skip")
         return "skip"
+    limit = cfg_limit(cfg or {}, "size", SIZE_LIMIT)
     red = False
     for status, paths in name_status(base):
         path = paths[-1]
-        if status.startswith("D") or not is_source(path):
+        if status.startswith("D") or not is_source(path, cfg):
             continue
         now = lines_of(blob("HEAD", path))
         if status.startswith("A") or blob(base, paths[0]) is None:
-            if now > SIZE_LIMIT:
+            if now > limit:
                 warnings.append(f"tamanho: {path} novo com {now} linhas")
                 red = True
             continue
         old = lines_of(blob(base, paths[0]))
-        if old <= SIZE_LIMIT < now:
-            warnings.append(f"tamanho: {path} cruzou {SIZE_LIMIT} ({old} → {now})")
+        if old <= limit < now:
+            warnings.append(f"tamanho: {path} cruzou {limit} ({old} → {now})")
             red = True
     return "red" if red else "green"
 
@@ -396,17 +477,18 @@ def lizard_map(path):
     return found
 
 
-def cc_layer(repo, base, warnings, rows=None):
+def cc_layer(repo, base, warnings, rows=None, cfg=None):
     if not shutil.which("lizard"):
         warnings.append("cc: lizard ausente, skip")
         return "skip"
     if not base:
         warnings.append("cc: sem base, skip")
         return "skip"
+    limit = cfg_limit(cfg or {}, "cc", CC_LIMIT)
     red = skipped = False
     for status, paths in (name_status(base) if rows is None else rows):
         path = paths[-1]
-        if status.startswith("D") or not is_source(path):
+        if status.startswith("D") or not is_source(path, cfg):
             continue
         head_map = lizard_map(str(repo / path))
         if head_map is None:
@@ -425,11 +507,11 @@ def cc_layer(repo, base, warnings, rows=None):
                 os.unlink(tmp_name)
         for name, ccn in head_map.items():
             old = old_map.get(name)
-            if old is None and ccn > CC_LIMIT:
+            if old is None and ccn > limit:
                 warnings.append(f"cc: {path} {name} nova com {ccn}")
                 red = True
-            elif old is not None and old <= CC_LIMIT < ccn:
-                warnings.append(f"cc: {path} {name} cruzou {CC_LIMIT} ({old} → {ccn})")
+            elif old is not None and old <= limit < ccn:
+                warnings.append(f"cc: {path} {name} cruzou {limit} ({old} → {ccn})")
                 red = True
     return "red" if red else "skip" if skipped else "green"
 
@@ -465,46 +547,56 @@ def internal_target(target, repo):
     return "/" not in target and ((repo / top).is_dir() or (repo / "src" / top).is_dir())
 
 
-def mock_finding(found, path, text, repo, graph):
+def db_module_rx(cfg=None):
+    return compile_extra(DB_MODULE, (cfg or {}).get("dbModules"), "dbModules")
+
+
+def real_db_rx(cfg=None):
+    return compile_extra(REAL_DB, (cfg or {}).get("realDbPatterns"), "realDbPatterns", re.IGNORECASE)
+
+
+def mock_finding(found, path, text, repo, graph, cfg=None, db_rx=None, real_rx=None):
     """(vermelho?, motivo) para um alvo de mock num teste, ou None se ele é externo ou é injeção de banco real."""
     if not (internal_target(found, repo) or graph.resolve(found, path)):
         return None
-    if DB_MODULE.search(found):
-        return None if REAL_DB.search(text) else (True, f"mocka o banco ({found}); use banco real em memória")
+    if (db_rx or db_module_rx(cfg)).search(found):
+        return None if (real_rx or real_db_rx(cfg)).search(text) else (True, f"mocka o banco ({found}); use banco real em memória")
     if re.split(r"[/.]", found.rstrip("/"))[-1] == os.path.basename(path).split(".")[0]:
         return True, f"mocka o próprio módulo testado ({found})"
     return False, f"mocka código próprio ({found}); mock só na fronteira"
 
 
-def mocks_layer(repo, base, warnings):
+def mocks_layer(repo, base, warnings, cfg=None):
     """Só linhas adicionadas: mock antigo em teste editado não acusa."""
     if not base:
         warnings.append("mocks: sem base, skip")
         return "skip"
     red = False
     graph = ImportGraph(repo)
+    db_rx = db_module_rx(cfg)
+    real_rx = real_db_rx(cfg)
     added = added_lines_map(base)
     for status, paths in name_status(base):
         path = paths[-1]
-        if status.startswith("D") or not is_test(path) or Path(path).suffix not in SOURCE_EXT:
+        if status.startswith("D") or not is_test(path) or Path(path).suffix not in SOURCE_EXT or is_ignored(path, cfg):
             continue
         text = blob("HEAD", path) or ""
         lines = text.splitlines()
         for num in added.get(path, ()):
             line = lines[num - 1] if 0 < num <= len(lines) else ""
-            for is_red, msg in line_mock_findings(line, path, text, repo, graph):
+            for is_red, msg in line_mock_findings(line, path, text, repo, graph, cfg, db_rx, real_rx):
                 red = red or is_red
                 warnings.append(f"mocks: {path}:{num} {msg}")
     return "red" if red else "green"
 
 
-def line_mock_findings(line, path, text, repo, graph):
+def line_mock_findings(line, path, text, repo, graph, cfg=None, db_rx=None, real_rx=None):
     """[(vermelho?, motivo)] de uma linha adicionada num teste."""
     if MOCK_DB_LINE.search(line):
         return [(True, "mocka o banco (stub de query/persistência); use o banco de teste real")]
     out = [(False, f"mocka código próprio ({const}); mock só na fronteira") for const in MOCK_RB.findall(line) if graph.resolve_rb(const)]
     for found in (*MOCK_JS.findall(line), *MOCK_PY.findall(line)):
-        finding = mock_finding(found, path, text, repo, graph)
+        finding = mock_finding(found, path, text, repo, graph, cfg, db_rx, real_rx)
         if finding:
             out.append(finding)
     return out
@@ -704,31 +796,38 @@ class ImportGraph:
         return seen
 
 
-def is_db_module(path):
-    return DB_MODULE.search(str(Path(path).with_suffix("")).replace("\\", "/")) is not None
+def is_db_module(path, cfg=None, db_rx=None):
+    return (db_rx or db_module_rx(cfg)).search(str(Path(path).with_suffix("")).replace("\\", "/")) is not None
 
 
-def integration_kind(path, graph):
+def integration_kind(path, graph, cfg=None, db_rx=None):
     """'data' (toca o banco, ou service/action/rota...), 'ui' (componente, hook) ou None."""
-    if not is_source(path) or is_db_module(path):
+    cfg = cfg or {}
+    db_rx = db_rx or db_module_rx(cfg)
+    if not is_source(path, cfg) or is_db_module(path, cfg, db_rx):
+        return None
+    integ = cfg.get("integration") if isinstance(cfg.get("integration"), dict) else {}
+    if matches_any(path, integ.get("ignore")):
         return None
     parts = set(path.split("/")[:-1])
     base = os.path.basename(path)
+    ui_dirs = UI_DIRS | {d for d in (integ.get("uiDirs") or ()) if isinstance(d, str)}
+    data_dirs = DATA_DIRS | {d for d in (integ.get("dataDirs") or ()) if isinstance(d, str)}
     # UI é JS/TS: components/ do ViewComponent ou hooks/ em Python/Go seguem a classificação normal.
-    if parts & UI_DIRS and Path(base).suffix in JS_EXT:
+    if parts & ui_dirs and Path(base).suffix in JS_EXT:
         return "ui"
-    if graph.touches_db(path) or any(is_db_module(item) for item in graph.imports(path)):
+    if graph.touches_db(path) or any(is_db_module(item, cfg, db_rx) for item in graph.imports(path)):
         return "data"
     if path.endswith(".rb") and path.startswith("app/") and parts & RB_DATA_DIRS:
         return "data"
-    if parts & DATA_DIRS or DATA_FILE.search(base) or Path(base).stem in {"route", "router"}:
+    if parts & data_dirs or DATA_FILE.search(base) or Path(base).stem in {"route", "router"}:
         return "data"
     return None
 
 
-def is_integration(text, kind):
+def is_integration(text, kind, cfg=None, real_rx=None):
     if kind == "data":
-        return REAL_DB.search(text) is not None
+        return (real_rx or real_db_rx(cfg)).search(text) is not None
     return all(rx.search(text) for rx in UI_INTERACTION)
 
 
@@ -739,12 +838,13 @@ def test_files(untracked=False):
     return [p for p in files if is_test(p) and Path(p).suffix in SOURCE_EXT and not p.endswith(".d.ts")]
 
 
-def covered_by_integration(graph, untracked=False):
+def covered_by_integration(graph, untracked=False, cfg=None, real_rx=None):
     """{kind: arquivos alcançados por algum teste de integração daquele tipo}."""
     covered = {"data": set(), "ui": set()}
+    real_rx = real_rx or real_db_rx(cfg)
     for test in test_files(untracked):
         text = graph.text(test)
-        kinds = [kind for kind in covered if is_integration(text, kind)]
+        kinds = [kind for kind in covered if is_integration(text, kind, cfg, real_rx)]
         if not kinds:
             continue
         mocked = {graph.resolve(spec, test) for spec in MOCK_JS.findall(text)}
@@ -755,17 +855,19 @@ def covered_by_integration(graph, untracked=False):
     return covered
 
 
-def integration_gaps(repo, rows, untracked=False):
+def integration_gaps(repo, rows, untracked=False, cfg=None):
     graph = ImportGraph(repo)
+    db_rx = db_module_rx(cfg)
+    real_rx = real_db_rx(cfg)
     touched = []
     for status, paths in rows:
         path = paths[-1]
-        kind = None if status.startswith("D") else integration_kind(path, graph)
+        kind = None if status.startswith("D") else integration_kind(path, graph, cfg, db_rx)
         if kind:
             touched.append((path, kind))
     if not touched:
         return []
-    covered = covered_by_integration(graph, untracked)
+    covered = covered_by_integration(graph, untracked, cfg, real_rx)
     return [(path, kind) for path, kind in touched if path not in covered[kind]]
 
 
@@ -775,11 +877,11 @@ GAP_HINT = {
 }
 
 
-def integration_layer(repo, base, warnings):
+def integration_layer(repo, base, warnings, cfg=None):
     if not base:
         warnings.append("integração: sem base, skip")
         return "skip"
-    gaps = integration_gaps(repo, name_status(base))
+    gaps = integration_gaps(repo, name_status(base), cfg=cfg)
     for path, kind in gaps:
         warnings.append(f"integração: {path} sem {GAP_HINT[kind]}")
     return "red" if gaps else "green"
@@ -789,10 +891,11 @@ def cmd_integration():
     """Lacunas de integração do diff contra a working tree, antes de escrever os testes."""
     repo = root()
     os.chdir(repo)
-    base = base_sha() or git("rev-parse", "HEAD").stdout.strip()
+    cfg = repo_config(repo)
+    base = base_sha(cfg) or git("rev-parse", "HEAD").stdout.strip()
     rows = name_status(base, None)
     rows += [("A", [path]) for path in git("ls-files", "--others", "--exclude-standard").stdout.splitlines()]
-    gaps = integration_gaps(repo, rows, untracked=True)
+    gaps = integration_gaps(repo, rows, untracked=True, cfg=cfg)
     for path, kind in gaps:
         print(f"[doctor-deploy] integração: falta {GAP_HINT[kind]}: {path}", file=sys.stderr)
     if not gaps:
@@ -804,12 +907,13 @@ def cmd_cc():
     """CC das funções do diff contra a working tree, antes de escrever os testes."""
     repo = root()
     os.chdir(repo)
-    base = base_sha() or git("rev-parse", "HEAD").stdout.strip()
+    cfg = repo_config(repo)
+    base = base_sha(cfg) or git("rev-parse", "HEAD").stdout.strip()
     rows = name_status(base, None)
     untracked = git("ls-files", "--others", "--exclude-standard").stdout.splitlines()
     rows += [("A", [path]) for path in untracked]
     warnings = []
-    status = cc_layer(repo, base, warnings, rows)
+    status = cc_layer(repo, base, warnings, rows, cfg=cfg)
     for line in warnings:
         print(f"[doctor-deploy] {line}", file=sys.stderr)
     print(f"[doctor-deploy] cc: {status}", file=sys.stderr)
@@ -829,12 +933,12 @@ def audit_status(run):
     return "red" if AUDIT_FINDINGS.search(run.stdout + run.stderr) else "error"
 
 
-def audit_layer(base, warnings):
+def audit_layer(base, warnings, cfg=None):
     if not base:
         warnings.append("audit: sem base, skip")
         return "skip"
     changed = changed_paths(name_status(base))
-    locks = [name for name in changed if name in AUDIT]
+    locks = [name for name in changed if name in AUDIT and not is_ignored(name, cfg)]
     if not locks:
         return "skip"
     ran = False
@@ -902,10 +1006,10 @@ JS_EXT = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 MUTANT_EVIL = re.compile(r"^evil:(\S+?):((?:/|[A-Za-z]:[\\/])[^\n]+?\.rb):(\d+):[0-9a-f]+\s*$", re.MULTILINE)
 
 
-def diff_added(base, exts):
+def diff_added(base, exts, cfg=None):
     """{fonte do diff com essas extensões: linhas adicionadas}."""
     all_added = added_lines_map(base)
-    added = {p: set(all_added.get(p, ())) for p in changed_paths(name_status(base)) if is_source(p) and Path(p).suffix in exts}
+    added = {p: set(all_added.get(p, ())) for p in changed_paths(name_status(base)) if is_source(p, cfg) and Path(p).suffix in exts}
     return {p: lines for p, lines in added.items() if lines}
 
 
@@ -924,11 +1028,11 @@ def report_survivors(survivors, warnings):
     return "red" if survivors else "green"
 
 
-def mutate_stryker(repo, base, warnings):
+def mutate_stryker(repo, base, warnings, cfg=None):
     exe = stryker_exe()
     if exe is None:
         return None
-    added = diff_added(base, JS_EXT)
+    added = diff_added(base, JS_EXT, cfg)
     if not added:
         return "green"
     STRYKER_REPORT.unlink(missing_ok=True)
@@ -941,11 +1045,11 @@ def mutate_stryker(repo, base, warnings):
     return report_survivors([(f"{p}:{line}", op) for p, line, op in stryker_survivors(repo, added)], warnings)
 
 
-def mutate_gremlins(repo, base, warnings):
+def mutate_gremlins(repo, base, warnings, cfg=None):
     exe = shutil.which("gremlins")
     if not exe or not Path("go.mod").exists():
         return None
-    added = diff_added(base, {".go"})
+    added = diff_added(base, {".go"}, cfg)
     if not added:
         return "green"
     mutants = gremlins_report(exe, repo, base, warnings)
@@ -997,7 +1101,7 @@ def mutant_evil(out, repo):
     return found
 
 
-def mutate_mutant(repo, base, warnings):
+def mutate_mutant(repo, base, warnings, cfg=None):
     if not mutant_configured():
         return None
     if os.name == "nt":
@@ -1019,7 +1123,7 @@ def mutate_mutant(repo, base, warnings):
     return report_survivors(evil, warnings)
 
 
-def mutation_layer(repo, base, warnings):
+def mutation_layer(repo, base, warnings, cfg=None):
     consent = load_json(consent_path()) or {}
     if consent.get("mutation") == "no":
         warnings.append("mutação: recusada, skip")
@@ -1029,10 +1133,10 @@ def mutation_layer(repo, base, warnings):
         return "skip"
     # O mutador roda a suíte de novo (o mutant com o SimpleCov ligado em cada mutante): a cobertura
     # do quality é restaurada, senão o próximo prepare herda o lixo pelo merge do SimpleCov.
-    saved = {p: p.read_bytes() for p in (repo / name for name in COVERAGE_FILES) if p.is_file()}
+    saved = {p: p.read_bytes() for p in (repo / name for name in coverage_candidates(cfg)) if p.is_file()}
     try:
         for mutate in (mutate_stryker, mutate_gremlins, mutate_mutant):
-            result = mutate(repo, base, warnings)
+            result = mutate(repo, base, warnings, cfg)
             if result is not None:
                 return result
     finally:
@@ -1045,19 +1149,25 @@ def mutation_layer(repo, base, warnings):
 def cmd_layers(started):
     repo = root()
     os.chdir(repo)
-    base = base_sha()
+    cfg = repo_config(repo)
+    base = base_sha(cfg)
+    disabled = {item for item in (cfg.get("disableLayers") or ()) if isinstance(item, str)}
     warnings = []
     steps = {
-        "diff_cover": lambda: coverage_layer(repo, base, started, warnings),
-        "size": lambda: size_layer(base, warnings),
-        "cc": lambda: cc_layer(repo, base, warnings),
-        "mocks": lambda: mocks_layer(repo, base, warnings),
-        "integration": lambda: integration_layer(repo, base, warnings),
-        "audit": lambda: audit_layer(base, warnings),
-        "mutation": lambda: mutation_layer(repo, base, warnings),
+        "diff_cover": lambda: coverage_layer(repo, base, started, warnings, cfg),
+        "size": lambda: size_layer(base, warnings, cfg),
+        "cc": lambda: cc_layer(repo, base, warnings, cfg=cfg),
+        "mocks": lambda: mocks_layer(repo, base, warnings, cfg),
+        "integration": lambda: integration_layer(repo, base, warnings, cfg),
+        "audit": lambda: audit_layer(base, warnings, cfg),
+        "mutation": lambda: mutation_layer(repo, base, warnings, cfg),
     }
     layers = {}
     for name, step in steps.items():
+        if name in disabled:
+            warnings.append(f"{name}: desativada em {CONFIG_FILE}")
+            layers[name] = "skip"
+            continue
         # Erro inesperado numa camada é vermelho com nome e motivo, sem derrubar as outras nem o JSON.
         try:
             layers[name] = step()
@@ -1126,15 +1236,37 @@ def cmd_print():
 def cmd_preflight():
     # Só avisos: no portão, cada um destes vira skip, não vermelho.
     repo = root()
+    cfg = repo_config(repo)
     def say(ok, msg_ok, msg_warn):
         print(f"[doctor-deploy] ok: {msg_ok}" if ok else f"[doctor-deploy] aviso: {msg_warn}", file=sys.stderr)
-    base = base_sha()
-    say(base, f"base {base[:12]}", "sem base diferente do HEAD (origin/master, origin/main, master, main): as camadas do diff vão pular")
-    cov = next((name for name in COVERAGE_FILES if (repo / name).is_file()), None)
+    base = base_sha(cfg)
+    say(base, f"base {base[:12]}", "sem base diferente do HEAD (origin/HEAD, master, main): as camadas do diff vão pular")
+    cov = next((name for name in coverage_candidates(cfg) if (repo / name).is_file()), None)
     say(cov, f"cobertura em {cov} (o portão exige que o quality a regenere)",
         "nenhum artefato de cobertura (lcov, Cobertura XML, coverprofile do Go, .resultset.json do SimpleCov): se o quality não gerar um, o diff-cover vai pular")
     for tool in needs_consent():
         print(f"[doctor-deploy] aviso: {tool} sem consentimento (gate.sh consent {tool} yes|no)", file=sys.stderr)
+
+
+def cmd_config_quality():
+    cfg = repo_config()
+    q = cfg.get("quality")
+    if isinstance(q, str) and q.strip():
+        print(q.strip())
+
+
+def cmd_config_branches():
+    cfg = repo_config()
+    branches = cfg.get("protectedBranches")
+    if isinstance(branches, list):
+        items = [b.strip() for b in branches if isinstance(b, str) and b.strip()]
+        if items:
+            print(",".join(items))
+            return
+    base = cfg.get("baseBranch")
+    if isinstance(base, str) and base.strip():
+        b = base.strip()
+        print(b.split("/", 1)[1] if b.startswith("origin/") else b)
 
 
 def needs_consent():
@@ -1196,6 +1328,12 @@ def main():
         return
     if cmd == "consent":
         cmd_consent(argv[1], argv[2])
+        return
+    if cmd == "config-quality":
+        cmd_config_quality()
+        return
+    if cmd == "config-branches":
+        cmd_config_branches()
         return
     raise SystemExit(f"comando desconhecido: {cmd}")
 

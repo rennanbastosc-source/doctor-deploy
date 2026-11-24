@@ -6,7 +6,18 @@ set -eu
 
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 GATE=$SKILL_DIR/gate.sh
-protected=${PUSH_GATE_BRANCHES:-main,master}
+protected=${PUSH_GATE_BRANCHES:-}
+if [ -z "$protected" ] && [ -f .doctor-deploy.json ]; then
+  PYTHON=python3
+  "$PYTHON" -c '' >/dev/null 2>&1 || PYTHON=python
+  if command -v "$PYTHON" >/dev/null 2>&1; then
+    export PYTHONUTF8=1
+    if ! protected=$("$PYTHON" "$SKILL_DIR/layers.py" config-branches); then
+      exit 1
+    fi
+  fi
+fi
+protected=${protected:-main,master}
 zero=0000000000000000000000000000000000000000
 fail=0
 

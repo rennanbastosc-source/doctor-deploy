@@ -530,4 +530,68 @@ JS
 fake_bin pip-audit
 PATH="$FAKE:$PATH" layer audit red "pip-audit com uv.lock não ficou vermelho"
 
+# base dinâmica via origin/HEAD (branch develop)
+newrepo dynrepo
+git switch -qc develop
+mkdir -p src
+printf '%s\n' 'export const a = 1' > src/a.ts
+git add src && git commit -qm base
+git update-ref refs/remotes/origin/develop HEAD
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+printf '%s\n' 'export const a = 1' 'export const b = 2' > src/a.ts
+git commit -qam feat
+[ -n "$("$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); import layers; print(layers.base_sha())' "$SKILL")" ] || { echo "base_sha não detectou origin/HEAD -> origin/develop" >&2; exit 1; }
+
+# .doctor-deploy.json: inválido falha alto (preflight e pre-push); overrides gerais
+newrepo cfgrepo
+git switch -qc trunk
+mkdir -p src/legacy src/usecases src/infra scripts reports
+printf '%s\n' '{' > .doctor-deploy.json
+"$GATE" preflight 2>&1 | grep -q ".doctor-deploy.json ilegível" || { echo ".doctor-deploy.json inválido sem erro claro" >&2; exit 1; }
+if printf 'refs/heads/feat %s refs/heads/feat %s\n' "$ZERO" "$ZERO" | "$SKILL/pre-push.sh" 2>/dev/null; then
+  echo "pre-push deixou passar .doctor-deploy.json inválido" >&2
+  exit 1
+fi
+printf '%s\n' 'export const db = {}' > src/infra/datasource.ts
+printf '%s\n' 'export const ok = 1' > src/usecases/criar.ts
+printf '%s\n' '#!/bin/sh\necho custom-q >&2\nexit 1\n' > scripts/custom.sh
+printf '%s\n' '{}' > .doctor-deploy.json
+git add -A && git commit -qm base && git update-ref refs/remotes/origin/trunk HEAD
+cat > .doctor-deploy.json <<'JSON'
+{
+  "baseBranch": "trunk",
+  "protectedBranches": ["trunk"],
+  "quality": "sh scripts/custom.sh",
+  "limits": { "size": 5, "cc": 20 },
+  "coverageFiles": ["reports/custom.lcov"],
+  "ignorePaths": ["src/legacy/**"],
+  "dbModules": ["(^|[/.])datasource$"],
+  "realDbPatterns": ["startFakeContainer\\("],
+  "integration": { "dataDirs": ["usecases"], "ignore": ["src/usecases/ignorado.ts"] },
+  "disableLayers": ["size"]
+}
+JSON
+(cd src/usecases && "$GATE" preflight 2>&1 | grep -q "ok: quality = sh scripts/custom.sh") || { echo "preflight em subpasta ignorou quality do .doctor-deploy.json" >&2; exit 1; }
+if printf 'refs/heads/trunk %s refs/heads/trunk %s\n' "$(git rev-parse HEAD)" "$ZERO" | "$SKILL/pre-push.sh" 2>/dev/null; then
+  echo "pre-push não protegeu protectedBranches do .doctor-deploy.json" >&2
+  exit 1
+fi
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' 'export const a1=1' 'export const a2=2' 'export const a3=3' 'export const a4=4' 'export const a5=5' 'export const a6=6' > src/legacy/velho.ts
+printf '%s\n' 'export const x = 1' > src/usecases/ignorado.ts
+printf '%s\n' 'import { db } from "../infra/datasource"' 'export const run = () => db' > src/usecases/criar.ts
+printf '%s\n' 'vi.mock("../infra/datasource")' 'import { run } from "../usecases/criar"' 'startFakeContainer()' > src/usecases/criar.test.ts
+mkdir -p reports
+printf '%s\n' 'SF:src/usecases/criar.ts' 'DA:1,1' 'DA:2,1' 'end_of_record' > reports/custom.lcov
+git add -A && git commit -qm overrides
+out=$("$PYTHON" "$PY" layers --started 0)
+printf '%s\n' "$out" | grep -q '"diff_cover": "green"' || { echo "coverageFiles customizado não foi lido: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q '"size": "skip"' || { echo "disableLayers não pulou size: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q '"mocks": "green"' || { echo "realDbPatterns não liberou dbModules custom: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q '"integration": "green"' || { echo "integration com realDbPatterns/ignore não ficou green: $out" >&2; exit 1; }
+# limits.size = 5 sem disableLayers reprova arquivo com 6 linhas fora de ignorePaths
+sed 's/"disableLayers": \["size"\]/"disableLayers": []/' .doctor-deploy.json > .dd.tmp && mv .dd.tmp .doctor-deploy.json
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' 'export const a1=1' 'export const a2=2' 'export const a3=3' 'export const a4=4' 'export const a5=5' 'export const a6=6' > src/grande.ts
+git add -A && git commit -qm grande
+layer size red "limits.size = 5 no .doctor-deploy.json não reprovou arquivo de 6 linhas"
+
 echo "self-check ok"

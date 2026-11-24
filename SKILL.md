@@ -67,7 +67,7 @@ No diff a barra é 100% das linhas e branches que o relatório lista: hits 0 ou 
 
 Lock fora de sincronia com o manifest, lint, tipos e build são portões do CI: o quality os reproduz ([SETUP.md](SETUP.md) §0), a skill não os reimplementa.
 
-Tetos 400 e 15 são constantes da skill. Não crie config por repo. Não abaixe threshold, não alargue exclude, não apague teste para passar.
+Tetos 400 e 15 são os padrões da skill. Overrides por repo (tetos, branch base, comando de `quality`, paths ignorados, camadas desativadas, padrões de banco/integração) ficam no manifesto opcional `.doctor-deploy.json` na raiz ([SETUP.md](SETUP.md)). Não abaixe threshold, não alargue exclude, não apague teste para passar.
 
 ## Reparo
 
