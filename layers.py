@@ -340,7 +340,7 @@ MOCK_JS = re.compile(r"""\b(?:vi|jest)\.(?:mock|doMock)\(\s*['"]([^'"]+)['"]""")
 MOCK_PY = re.compile(r"""\bpatch\(\s*['"]([^'"]+)['"]""")
 DB_MODULE = re.compile(r"(^|[/.])(db|prisma|database|drizzle)([/.]index)?$")
 # Banco real injetado pelo mock (padrão do erp-2f: libsql :memory: + migrate) não é mock de banco.
-REAL_DB = re.compile(r"migrate\(|:memory:|PGlite|testcontainers")
+REAL_DB = re.compile(r"migrate\(|:memory:|pglite|testcontainers", re.IGNORECASE)
 
 
 def internal_target(target, repo):
@@ -380,6 +380,107 @@ def mocks_layer(repo, base, warnings):
                 else:
                     warnings.append(f"mocks: {path}:{num} mocka código próprio ({found}); mock só na fronteira")
     return "red" if red else "green"
+
+
+DATA_DIRS = {"services", "service", "actions", "api", "routes", "routers", "handlers", "controllers", "repositories"}
+UI_DIRS = {"components", "hooks"}
+DATA_FILE = re.compile(r"\.(service|action|actions|router|route|controller|handler|repository)\.[a-z]+$")
+IMPORT_SPEC = re.compile(r"""(?:\bfrom\s+|\bimport\(\s*|\brequire\(\s*)['"]([^'"]+)['"]""")
+UI_INTERACTION = (re.compile(r"\brender\("), re.compile(r"\b(userEvent|fireEvent)\b"))
+
+
+def integration_kind(path):
+    """'data' (service, action, rota...), 'ui' (componente, hook) ou None."""
+    if not is_source(path):
+        return None
+    parts = set(path.split("/")[:-1])
+    base = os.path.basename(path)
+    if parts & UI_DIRS:
+        return "ui"
+    if parts & DATA_DIRS or DATA_FILE.search(base) or Path(base).stem in {"route", "router"}:
+        return "data"
+    return None
+
+
+def imports_module(text, path):
+    # shortcut: casa o especificador pelo nome do arquivo e pela pasta (ou import relativo),
+    # sem resolver alias do tsconfig. Trocar por resolução real se aparecer falso positivo.
+    item = Path(path)
+    stem, parent = item.stem, item.parent.name
+    if stem == "index":
+        stem, parent = parent, item.parent.parent.name
+    for spec in IMPORT_SPEC.findall(text):
+        bits = spec.split("/")
+        if stem in (bits[-1], Path(bits[-1]).stem):
+            if spec.startswith(".") or parent in bits[:-1]:
+                return True
+    return False
+
+
+def is_integration(text, kind):
+    if kind == "data":
+        return REAL_DB.search(text) is not None
+    return all(rx.search(text) for rx in UI_INTERACTION)
+
+
+def test_texts(repo, untracked=False):
+    files = git("ls-files").stdout.splitlines()
+    if untracked:
+        files += git("ls-files", "--others", "--exclude-standard").stdout.splitlines()
+    out = {}
+    for path in files:
+        if is_test(path) and Path(path).suffix in SOURCE_EXT and not path.endswith(".d.ts"):
+            try:
+                out[path] = (repo / path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+    return out
+
+
+def integration_gaps(repo, rows, untracked=False):
+    tests = None
+    gaps = []
+    for status, paths in rows:
+        path = paths[-1]
+        kind = None if status.startswith("D") else integration_kind(path)
+        if kind is None:
+            continue
+        if tests is None:
+            tests = test_texts(repo, untracked)
+        if not any(imports_module(text, path) and is_integration(text, kind) for text in tests.values()):
+            gaps.append((path, kind))
+    return gaps
+
+
+GAP_HINT = {
+    "data": "teste que importe o módulo e rode contra banco real em memória",
+    "ui": "teste que renderize o componente e interaja (render + userEvent/fireEvent)",
+}
+
+
+def integration_layer(repo, base, warnings):
+    if not base:
+        warnings.append("integração: sem base, skip")
+        return "skip"
+    gaps = integration_gaps(repo, name_status(base))
+    for path, kind in gaps:
+        warnings.append(f"integração: {path} sem {GAP_HINT[kind]}")
+    return "red" if gaps else "green"
+
+
+def cmd_integration():
+    """Lacunas de integração do diff contra a working tree, antes de escrever os testes."""
+    repo = root()
+    os.chdir(repo)
+    base = base_sha() or git("rev-parse", "HEAD").stdout.strip()
+    rows = name_status(base, None)
+    rows += [("A", [path]) for path in git("ls-files", "--others", "--exclude-standard").stdout.splitlines()]
+    gaps = integration_gaps(repo, rows, untracked=True)
+    for path, kind in gaps:
+        print(f"[doctor-deploy] integração: falta {GAP_HINT[kind]}: {path}", file=sys.stderr)
+    if not gaps:
+        print("[doctor-deploy] integração: todo módulo tocado tem teste de integração", file=sys.stderr)
+    return 1 if gaps else 0
 
 
 def cmd_cc():
@@ -487,6 +588,7 @@ def cmd_layers(started):
         "size": size_layer(base, warnings),
         "cc": cc_layer(repo, base, warnings),
         "mocks": mocks_layer(repo, base, warnings),
+        "integration": integration_layer(repo, base, warnings),
         "deps": deps_layer(base, warnings),
         "audit": audit_layer(base, warnings),
         "mutation": mutation_layer(warnings),
@@ -592,7 +694,7 @@ def cmd_consent(tool, answer):
 def main():
     argv = sys.argv[1:]
     if not argv:
-        raise SystemExit("uso: layers | cc | write-receipt | check | print-skipped | needs-consent | consent")
+        raise SystemExit("uso: layers | cc | integration | write-receipt | check | print-skipped | needs-consent | consent")
     cmd = argv[0]
     if cmd == "layers":
         started = 0
@@ -611,6 +713,8 @@ def main():
         return
     if cmd == "cc":
         raise SystemExit(cmd_cc())
+    if cmd == "integration":
+        raise SystemExit(cmd_integration())
     if cmd == "preflight":
         cmd_preflight()
         return

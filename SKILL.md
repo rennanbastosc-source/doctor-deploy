@@ -33,7 +33,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 - Tree suja, inclusive untracked, recusa o recibo. Não commite por conta própria.
 - Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality`, `python3 scripts/quality.py`. Sem entrypoint: vermelho. A exceção é explícita e por clone: `git config doctor-deploy.allowNoQuality true`. Com ela, `quality` entra em `skipped` e o `check` só aceita esse recibo enquanto a chave existir.
-- Antes de escrever os testes do diff, `gate.sh cc`: CC das funções novas ou alteradas, inclusive o não commitado. Acima de 15, quebre a função e só então teste.
+- Antes de escrever os testes do diff: `gate.sh cc` (CC das funções novas ou alteradas, inclusive o não commitado; acima de 15, quebre a função) e depois `gate.sh integration` (módulos tocados sem teste de integração; escreva os que ele listar). Ordem completa em [SETUP.md](SETUP.md) §3.
 - Depois do quality, as camadas olham o diff contra `origin/master`, `origin/main`, `master` ou `main`. Sem fetch. Sem base, a camada é skip, não vermelho.
 - Verde grava `$(git rev-parse --git-dir)/doctor-deploy/receipt.json` com SHA testado, SHA da base, versão e camadas puladas. Imprima as puladas. Pare.
 
@@ -58,6 +58,7 @@ Deleção de branch não passa pelo portão e não desliga o portão dos outros 
 | Tamanho | arquivo novo de fonte acima de 400 linhas, ou editado que sai de ≤400 para >400 | teste, gerado, sem base |
 | CC | função nova com CC > 15, ou alterada que cruza 15, se `lizard` existir | sem lizard, sem aceite, teste, gerado |
 | Mocks | linha adicionada em teste que mocka o módulo de banco (sem banco real no mesmo arquivo) ou o próprio módulo testado | sem base. Mock de outro módulo próprio é aviso |
+| Integração | service, action, rota, router, controller ou repositório tocado sem teste que o importe e use banco real; componente ou hook tocado sem teste que renderize e interaja | sem base |
 | Lock | manifest da raiz mudou no diff e nenhum lock correspondente mudou | sem base |
 | Audit | high/critical quando o lock mudou e a ferramenta existe | ferramenta ausente, rede, lock intocado |
 | Mutação | nunca | sem mutador, recusa, ou timeout de 180s. O resultado vai no aviso, não no vermelho |

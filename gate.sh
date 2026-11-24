@@ -73,6 +73,10 @@ case "$cmd" in
   print-skipped)
     "$PYTHON" "$PY" print-skipped
     ;;
+  integration)
+    # Antes de escrever os testes: módulos tocados pelo diff sem teste de integração.
+    "$PYTHON" "$PY" integration
+    ;;
   check)
     [ -n "${1:-}" ] || die "check exige um SHA"
     "$PYTHON" "$PY" check "$1"
@@ -176,6 +180,6 @@ case "$cmd" in
     "$0" prepare
     ;;
   *)
-    die "uso: preflight | cc | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
+    die "uso: preflight | cc | integration | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
     ;;
 esac

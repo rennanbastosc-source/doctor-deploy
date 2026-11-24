@@ -198,6 +198,39 @@ fi
 "$PYTHON" -c 'import json,sys; r=json.load(open(sys.argv[1])); assert "quality" in r["skipped"], r' \
   "$(git rev-parse --git-dir)/doctor-deploy/receipt.json"
 
+# integração: service e componente tocados precisam de teste de integração
+mkdir -p "$TMP/irepo" && cd "$TMP/irepo"
+git init -b main >/dev/null
+git config user.email t@example.com
+git config user.name t
+printf '%s\n' 'x' > README.md
+git add README.md && git commit -qm base >/dev/null
+git update-ref refs/remotes/origin/main HEAD
+mkdir -p src/services src/components
+printf '%s\n' 'export const total = () => 1' > src/services/conta.service.ts
+if "$GATE" integration >/dev/null 2>&1; then
+  echo "integration não acusou service sem teste na working tree" >&2
+  exit 1
+fi
+git add -A && git commit -qm service >/dev/null
+if "$PYTHON" "$PY" layers --started 0 >/dev/null; then
+  echo "service sem teste de integração não ficou vermelho" >&2
+  exit 1
+fi
+mkdir -p src/services/__tests__
+printf '%s\n' 'vi.mock("@/lib/prisma")' 'import { total } from "../conta.service"' > src/services/__tests__/conta.test.ts
+git add -A && git commit -qm "teste com mock" >/dev/null
+if "$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q '"integration": "green"'; then
+  echo "teste com banco mockado contou como integração" >&2
+  exit 1
+fi
+printf '%s\n' 'import { total } from "../conta.service"' 'const db = createDb(":memory:")' > src/services/__tests__/conta.test.ts
+printf '%s\n' 'export function Botao() { return null }' > src/components/Botao.tsx
+printf '%s\n' 'import { Botao } from "./Botao"' 'render(<Botao />)' 'fireEvent.click(x)' > src/components/Botao.test.tsx
+"$GATE" integration >/dev/null 2>&1
+git add -A && git commit -qm "integração real" >/dev/null
+"$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q '"integration": "green"'
+
 # hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
 mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"
 git init -b main >/dev/null

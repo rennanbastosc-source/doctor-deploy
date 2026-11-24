@@ -29,10 +29,17 @@ Um entrypoint na raiz, na ordem que o `gate.sh` procura: `scripts.quality` no `p
 
 ## 3. Ordem do trabalho no diff
 
+A cada execução da skill, nesta ordem:
+
 1. Escreva o código.
 2. **`gate.sh cc`** — CC das funções novas ou alteradas, inclusive o que ainda não foi commitado. Função acima de 15: quebre antes de testar. Teste escrito em cima de uma função de CC 25 congela esse formato e precisa de 25+ caminhos.
-3. Escreva os testes das funções já quebradas.
-4. `gate.sh prepare`.
+3. **Unitários** das funções puras que o diff criou ou mudou (seção 4).
+4. **`gate.sh integration`** — lista cada módulo tocado que ainda não tem teste de integração:
+   - **dados** (service, action, rota, router, controller, repositório): falta um teste que importe o módulo e rode contra banco real em memória;
+   - **UI** (componente, hook): falta um teste que renderize e interaja (`render` + `userEvent`/`fireEvent`).
+
+   Escreva cada um que ele listar e rode de novo até sair limpo. Módulo antigo que o diff tocou entra também: é assim que a suíte full-mock vira integração aos poucos.
+5. `gate.sh prepare`. A camada `integration` repete a conta no commit e fica vermelha se sobrou lacuna.
 
 ## 4. Testes que pegam bug de produção
 
@@ -41,11 +48,13 @@ Cobertura mede execução, não verificação. Um teste que mocka o banco execut
 - **Unitário:** função pura, sem mock. Se o teste precisa mockar um módulo do próprio projeto, o código está acoplado: extraia a regra para uma função pura e teste essa.
 - **Integração:** entra pelo entrypoint real (caller do tRPC, server action, route handler), passa pelo service e chega a um **banco real em memória com as migrations reais**. Afirme o estado do banco no fim, não "o mock foi chamado com".
   - erp-2f: `createDb(":memory:")` + `migrate(db, { migrationsFolder: "./drizzle" })`, injetado com `vi.doMock("#/db/index", ...)` (ver `src/integrations/trpc/__tests__/obras.test.ts`).
-  - Postgres (Prisma ou Drizzle): PGlite, Postgres em processo, sem Docker e sem segredo. Docker disponível: testcontainers.
+  - frota-impacto (Prisma + Postgres): `tests/helpers/pglite-db.ts` sobe um PGlite com o schema do Prisma (`prisma migrate diff --from-empty`) mais `prisma/sql/*.sql`, e o teste injeta o client no seam de `@/lib/prisma` (ver `src/services/ai/rag.service.test.ts`). Sem Docker, sem Neon, sem segredo; ~4s por arquivo.
+  - Outro Postgres: o mesmo PGlite (adapter `pglite-prisma-adapter` ou `drizzle-orm/pglite`). Docker disponível: testcontainers.
+- **Prove que o teste pega o bug:** quebre a regra no código (tire um filtro do `WHERE`, troque um limite) e veja o teste ficar vermelho. No frota, o teste antigo do RAG, com `$queryRaw` mockado, passava com o filtro de papel removido; o de integração falha.
 - **Mock só na fronteira:** rede e SaaS de terceiros, relógio, aleatoriedade, runtime do framework (`next/navigation`, `next/cache`), toasts.
 - **Cada bug de produção corrigido ganha um teste que falha sem a correção.**
 
-A camada `mocks` da skill cobra isso nas linhas adicionadas em arquivos de teste: mockar o módulo de banco (sem banco real no mesmo arquivo) ou o próprio módulo testado é vermelho; mockar outro módulo próprio é aviso.
+A skill cobra isso em duas camadas: `mocks` (linhas adicionadas em teste que mockam o banco sem banco real no arquivo, ou o próprio módulo testado, são vermelho; outro módulo próprio é aviso) e `integration` (módulo tocado sem teste de integração é vermelho).
 
 ## 5. Hook
 
