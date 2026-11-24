@@ -114,34 +114,45 @@ Ponha `.mutant/` no `.gitignore`: o mutant grava resultados lá, e a árvore suj
 
 ## 5. Hook
 
-`scripts/pre-push.sh` versionado no repo, que faz os passos próprios do projeto (lembrete de E2E, sync de migrations), exporta `PUSH_GATE_BRANCHES=<branch principal>` e delega para `${DOCTOR_DEPLOY_HOOK:-$HOME/.agents/skills/doctor-deploy/pre-push.sh}` (instalado como plugin do Claude Code, exporte `DOCTOR_DEPLOY_HOOK` ou use o shim do `install-hook`, que acha o plugin mais novo sozinho). Sem a skill, bloqueia só o push para a branch principal. Depois, `gate.sh install-hook` grava o shim que executa esse script.
+`scripts/pre-push.sh` versionado no repo, que faz os passos próprios do projeto (lembrete de E2E, sync de migrations), exporta `PUSH_GATE_BRANCHES=<branch principal>` e delega para `${DOCTOR_DEPLOY_HOOK:-$HOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy/pre-push.sh}` com fallback para `$HOME/.gemini/config/plugins/doctor-deploy/pre-push.sh` e `$HOME/.agents/skills/doctor-deploy/pre-push.sh` (instalado como plugin do Claude Code, exporte `DOCTOR_DEPLOY_HOOK` ou use o shim do `install-hook`, que acha o plugin mais novo sozinho). Sem a skill, bloqueia só o push para a branch principal. Depois, `gate.sh install-hook` grava o shim que executa esse script.
 
 **`core.hooksPath`** (husky, lefthook, pre-commit e afins): o git lê os hooks dessa pasta, não de `.git/hooks`. O `install-hook` e o `preflight` seguem o `core.hooksPath`, mas não sobrescrevem o hook que o gerenciador já criou. Nesse caso, ponha a delegação no hook que o gerenciador executa, por exemplo uma linha em `.husky/pre-push` (husky 9) que chame `scripts/pre-push.sh` ou `${DOCTOR_DEPLOY_HOOK}`, repassando o stdin. O `preflight` avisa enquanto o pre-push não citar a skill.
 
-## 6. `.doctor-deploy.json` (opcional)
+## 6. `.doctor-deploy.toml` (obrigatório; fallback `doctor-deploy.toml`)
 
-Por padrão o portão é zero-config. Se o repositório fugir das convenções (branch principal diferente de `main`/`master`, paths de cobertura customizados, pasta de banco/integração fora do padrão, ou necessidade de ajustar tetos), crie `.doctor-deploy.json` na raiz:
+Todo repositório precisa do marcador `.doctor-deploy.toml` (ou `doctor-deploy.toml` como fallback; estilo `.ai-memory.toml`) na raiz antes de rodar qualquer comando do portão (`preflight`, `install-hook`, `cc`, `integration`, `prepare`, `ci`, `check`, `pre-push`). Rode `gate.sh init` para gerar o arquivo — se houver um `.doctor-deploy.json` legado, o `init` migra automaticamente todos os campos para TOML:
 
-```json
-{
-  "baseBranch": "develop",
-  "protectedBranches": ["main", "develop"],
-  "quality": "just quality",
-  "limits": { "size": 500, "cc": 20 },
-  "coverageFiles": ["reports/lcov.info"],
-  "ignorePaths": ["src/legacy/**"],
-  "dbModules": ["(^|[/.])datasource$"],
-  "realDbPatterns": ["createTestContainer\\("],
-  "integration": {
-    "dataDirs": ["usecases"],
-    "uiDirs": ["widgets"],
-    "ignore": ["src/components/icons/**"]
-  },
-  "disableLayers": ["mutation"]
-}
+```toml
+version = 1
+project = "meu-projeto"
+
+# Opcional: reencaminha gate.sh e pre-push.sh para a raiz do plugin em outro caminho
+[plugin]
+# root = "~/.gemini/config/plugins/doctor-deploy"
+
+[gate]
+base_branch = "develop"
+protected_branches = ["main", "develop"]
+quality = "just quality"
+coverage_files = ["reports/lcov.info"]
+ignore_paths = ["src/legacy/**"]
+disable_layers = ["mutation"]
+
+[limits]
+size = 500
+cc = 20
+
+[patterns]
+db_modules = ["(^|[/.])datasource$"]
+real_db_patterns = ["createTestContainer\\("]
+
+[integration]
+data_dirs = ["usecases"]
+ui_dirs = ["widgets"]
+ignore = ["src/components/icons/**"]
 ```
 
-Todo campo é opcional; `disableLayers` registra a camada como `skip` explícito no recibo.
+O campo `project` é obrigatório; as seções `[plugin]`, `[gate]`, `[limits]`, `[patterns]` e `[integration]` são opcionais (`disable_layers` registra a camada como `skip` explícito no recibo). Chaves desconhecidas ou arquivo ausente/inválido falham alto.
 
 ## 7. AGENTS.md
 

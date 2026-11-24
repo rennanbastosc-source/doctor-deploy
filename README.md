@@ -56,16 +56,18 @@ Requisitos: `git`, `sh` (no Windows, o do Git for Windows) e Python 3. Opcionais
 
 Peça ao agente "prepara o merge", "faz o push" ou `/dd`. Na primeira vez num repo, ele roda o preflight e monta o setup pelo [SETUP.md](SETUP.md): o `quality`, a cobertura, o hook e a política de testes.
 
-À mão, de dentro do repo do projeto (`<skill>` é `~/.agents/skills/doctor-deploy` ou a pasta do plugin):
+À mão, de dentro do repo do projeto (`<skill>` é `~/.agents/skills/doctor-deploy`, `~/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy` ou a raiz `~/.gemini/config/plugins/doctor-deploy`):
 
 ```sh
-sh <skill>/gate.sh preflight      # confere o repo sem rodar nada
-sh <skill>/gate.sh install-hook   # instala o pre-push (não sobrescreve hook do projeto)
-sh <skill>/gate.sh cc             # complexidade das funções do diff, antes dos testes
-sh <skill>/gate.sh integration    # módulos do diff sem teste de integração
-sh <skill>/gate.sh prepare        # quality + camadas; verde grava o recibo
-sh <skill>/gate.sh ci             # mesmo portão para runners de CI (sem recibo nem tree limpa)
-sh <skill>/gate.sh check <sha>    # recibo vale para esse commit?
+sh <skill>/gate.sh discover --json # inspeciona stacks, CI, hooks e lacunas
+sh <skill>/gate.sh init            # cria .doctor-deploy.toml obrigatório (migra .doctor-deploy.json)
+sh <skill>/gate.sh preflight       # valida .doctor-deploy.toml e confere o repo sem rodar nada
+sh <skill>/gate.sh install-hook    # instala o pre-push (não sobrescreve hook do projeto)
+sh <skill>/gate.sh cc              # complexidade das funções do diff, antes dos testes
+sh <skill>/gate.sh integration     # módulos do diff sem teste de integração
+sh <skill>/gate.sh prepare         # quality + camadas; verde grava o recibo
+sh <skill>/gate.sh ci              # mesmo portão para runners de CI (sem recibo nem tree limpa)
+sh <skill>/gate.sh check <sha>     # recibo vale para esse commit?
 ```
 
 ### No GitHub Actions (CI)

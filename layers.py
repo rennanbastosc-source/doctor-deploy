@@ -14,7 +14,202 @@ from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree as ET
 
 VERSION = 3
-CONFIG_FILE = ".doctor-deploy.json"
+CONFIG_FILE = ".doctor-deploy.toml"
+FALLBACK_CONFIG_FILE = "doctor-deploy.toml"
+LEGACY_CONFIG_FILE = ".doctor-deploy.json"
+VALID_LAYERS = {"diff_cover", "size", "cc", "mocks", "integration", "audit", "mutation"}
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover - fallback para Python <= 3.10
+    tomllib = None
+
+
+def _strip_toml_comment(line):
+    in_dq = False
+    in_sq = False
+    escaped = False
+    for idx, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if in_dq:
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_dq = False
+        elif in_sq:
+            if ch == "'":
+                in_sq = False
+        else:
+            if ch == '"':
+                in_dq = True
+            elif ch == "'":
+                in_sq = True
+            elif ch == "#":
+                return line[:idx]
+    return line
+
+
+def _split_toml_kv(line):
+    in_dq = False
+    in_sq = False
+    escaped = False
+    for idx, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if in_dq:
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_dq = False
+        elif in_sq:
+            if ch == "'":
+                in_sq = False
+        else:
+            if ch == '"':
+                in_dq = True
+            elif ch == "'":
+                in_sq = True
+            elif ch == "=":
+                return line[:idx].strip(), line[idx + 1 :].strip()
+    raise ValueError(f"linha inválida sem '=': {line!r}")
+
+
+def _brackets_balanced(expr):
+    depth = 0
+    in_dq = False
+    in_sq = False
+    escaped = False
+    for ch in expr:
+        if escaped:
+            escaped = False
+            continue
+        if in_dq:
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_dq = False
+        elif in_sq:
+            if ch == "'":
+                in_sq = False
+        else:
+            if ch == '"':
+                in_dq = True
+            elif ch == "'":
+                in_sq = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+    return depth <= 0 and not in_dq and not in_sq
+
+
+def _parse_toml_basic_str(s):
+    inner = s[1:-1]
+    out = []
+    i = 0
+    escapes = {'"': '"', "\\": "\\", "n": "\n", "t": "\t", "r": "\r"}
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "\\":
+            i += 1
+            if i >= len(inner) or inner[i] not in escapes:
+                raise ValueError(f"escape inválido em string TOML: {s}")
+            out.append(escapes[inner[i]])
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _split_toml_array_items(inner):
+    items, cur = [], []
+    depth, quote, escaped = 0, "", False
+    for ch in inner:
+        cur.append(ch)
+        if escaped:
+            escaped = False
+        elif quote:
+            if quote == '"' and ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = ""
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch in "[]":
+            depth += 1 if ch == "[" else -1
+        elif ch == "," and depth == 0:
+            cur.pop()
+            token = "".join(cur).strip()
+            if token:
+                items.append(token)
+            cur = []
+    tail = "".join(cur).strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def _parse_toml_value(raw):
+    s = raw.strip()
+    if not s:
+        raise ValueError("valor TOML vazio")
+    if s in ("true", "false"):
+        return s == "true"
+    if re.fullmatch(r"[+-]?\d+", s):
+        return int(s)
+    if s.startswith('"') and s.endswith('"') and len(s) >= 2:
+        return _parse_toml_basic_str(s)
+    if s.startswith("'") and s.endswith("'") and len(s) >= 2:
+        if "'" in s[1:-1]:
+            raise ValueError(f"string literal inválida: {s}")
+        return s[1:-1]
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        return [_parse_toml_value(tok) for tok in _split_toml_array_items(inner)] if inner else []
+    raise ValueError(f"valor TOML não suportado: {s}")
+
+
+def _fallback_toml_loads(text):
+    root_tbl = {}
+    cur_tbl = root_tbl
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        clean = _strip_toml_comment(lines[i]).strip()
+        i += 1
+        if not clean:
+            continue
+        if clean.startswith("[") and clean.endswith("]") and not clean.startswith("[["):
+            parts = [p.strip().strip('"').strip("'") for p in clean[1:-1].split(".")]
+            if not parts or any(not p for p in parts):
+                raise ValueError(f"seção inválida: {clean}")
+            cur_tbl = root_tbl
+            for part in parts:
+                nxt = cur_tbl.setdefault(part, {})
+                if not isinstance(nxt, dict):
+                    raise ValueError(f"conflito de seção TOML em {part}")
+                cur_tbl = nxt
+            continue
+        key, val_raw = _split_toml_kv(clean)
+        key = key.strip('"').strip("'")
+        if not key:
+            raise ValueError("chave vazia")
+        while not _brackets_balanced(val_raw):
+            if i >= len(lines):
+                raise ValueError(f"array não fechado em {key}")
+            val_raw += " " + _strip_toml_comment(lines[i]).strip()
+            i += 1
+        cur_tbl[key] = _parse_toml_value(val_raw)
+    return root_tbl
+
+
+def loads_toml(text):
+    if tomllib is not None:
+        return tomllib.loads(text)
+    return _fallback_toml_loads(text)
 SIZE_LIMIT = 400
 CC_LIMIT = 15
 SOURCE_EXT = {
@@ -73,29 +268,214 @@ def load_json(path):
         return None
 
 
-def repo_config(repo=None):
-    """Lê .doctor-deploy.json da raiz do repo se existir. Falha alto se inválido."""
+def find_config_path(base):
+    primary = base / CONFIG_FILE
+    fallback = base / FALLBACK_CONFIG_FILE
+    if primary.is_file() and fallback.is_file():
+        raise SystemExit(
+            f"[doctor-deploy] uso ambíguo: existem {CONFIG_FILE} e {FALLBACK_CONFIG_FILE}; mantenha apenas um"
+        )
+    if primary.is_file():
+        return primary
+    if fallback.is_file():
+        return fallback
+    return None
+
+
+def _require_str(val, field, label):
+    if not isinstance(val, str) or not val.strip():
+        raise SystemExit(f"[doctor-deploy] {label}: {field} deve ser string não vazia")
+    return val.strip()
+
+
+def _require_str_list(val, field, label):
+    if not isinstance(val, list) or any(not isinstance(x, str) or not x.strip() for x in val):
+        raise SystemExit(f"[doctor-deploy] {label}: {field} deve ser lista de strings não vazias")
+    return [x.strip() for x in val]
+
+
+def _require_pos_int(val, field, label):
+    if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
+        raise SystemExit(f"[doctor-deploy] {label}: {field} deve ser inteiro positivo")
+    return val
+
+
+GATE_KEY_MAP = {
+    "base_branch": ("baseBranch", "str"),
+    "baseBranch": ("baseBranch", "str"),
+    "protected_branches": ("protectedBranches", "str_list"),
+    "protectedBranches": ("protectedBranches", "str_list"),
+    "quality": ("quality", "str"),
+    "coverage_files": ("coverageFiles", "str_list"),
+    "coverageFiles": ("coverageFiles", "str_list"),
+    "ignore_paths": ("ignorePaths", "str_list"),
+    "ignorePaths": ("ignorePaths", "str_list"),
+    "disable_layers": ("disableLayers", "layers_list"),
+    "disableLayers": ("disableLayers", "layers_list"),
+    "db_modules": ("dbModules", "regex_list"),
+    "dbModules": ("dbModules", "regex_list"),
+    "real_db_patterns": ("realDbPatterns", "regex_list"),
+    "realDbPatterns": ("realDbPatterns", "regex_list"),
+    "plugin_root": ("pluginRoot", "str"),
+    "pluginRoot": ("pluginRoot", "str"),
+}
+
+INTEGRATION_KEY_MAP = {
+    "data_dirs": "dataDirs",
+    "dataDirs": "dataDirs",
+    "ui_dirs": "uiDirs",
+    "uiDirs": "uiDirs",
+    "ignore": "ignore",
+}
+
+
+def _apply_mapped_field(cfg, key, val, spec_map, label, prefix=""):
+    if key not in spec_map:
+        raise SystemExit(f"[doctor-deploy] {label}: chave desconhecida '{prefix}{key}'")
+    dest, kind = spec_map[key]
+    if kind == "str":
+        cfg[dest] = _require_str(val, prefix + key, label)
+    elif kind == "str_list":
+        cfg[dest] = _require_str_list(val, prefix + key, label)
+    elif kind == "layers_list":
+        items = _require_str_list(val, prefix + key, label)
+        bad = [item for item in items if item not in VALID_LAYERS]
+        if bad:
+            raise SystemExit(f"[doctor-deploy] {label}: camada desconhecida em {prefix}{key}: {', '.join(bad)}")
+        cfg[dest] = items
+    elif kind == "regex_list":
+        items = _require_str_list(val, prefix + key, label)
+        for pat in items:
+            try:
+                re.compile(pat)
+            except re.error as exc:
+                raise SystemExit(f"[doctor-deploy] {label}: regex inválida em {prefix}{key}: {exc}")
+        cfg[dest] = items
+
+
+def _require_table(val, section, label):
+    if not isinstance(val, dict):
+        raise SystemExit(f"[doctor-deploy] {label}: [{section}] deve ser tabela")
+    return val
+
+
+def _normalize_plugin_section(cfg, val, label):
+    for pk, pv in _require_table(val, "plugin", label).items():
+        if pk not in {"root", "home"}:
+            raise SystemExit(f"[doctor-deploy] {label}: chave desconhecida 'plugin.{pk}'")
+        cfg["pluginRoot"] = _require_str(pv, f"plugin.{pk}", label)
+
+
+def _normalize_limits_section(cfg, val, label):
+    limits = {}
+    for lk, lv in _require_table(val, "limits", label).items():
+        if lk not in {"size", "cc"}:
+            raise SystemExit(f"[doctor-deploy] {label}: chave desconhecida 'limits.{lk}'")
+        limits[lk] = _require_pos_int(lv, f"limits.{lk}", label)
+    cfg["limits"] = limits
+
+
+def _normalize_integration_section(cfg, val, label):
+    integ = {}
+    for ik, iv in _require_table(val, "integration", label).items():
+        if ik not in INTEGRATION_KEY_MAP:
+            raise SystemExit(f"[doctor-deploy] {label}: chave desconhecida 'integration.{ik}'")
+        integ[INTEGRATION_KEY_MAP[ik]] = _require_str_list(iv, f"integration.{ik}", label)
+    cfg["integration"] = integ
+
+
+PATTERN_KEY_MAP = {k: v for k, v in GATE_KEY_MAP.items() if k in {"db_modules", "dbModules", "real_db_patterns", "realDbPatterns"}}
+
+
+def _normalize_repo_config(raw, label):
+    if not isinstance(raw, dict):
+        raise SystemExit(f"[doctor-deploy] {label} ilegível: esperado objeto TOML")
+    project = raw.get("project")
+    if project is None:
+        raise SystemExit(f"[doctor-deploy] {label}: campo obrigatório 'project' ausente")
+    cfg = {"project": _require_str(project, "project", label)}
+    if "version" in raw:
+        v = _require_pos_int(raw["version"], "version", label)
+        if v != 1:
+            raise SystemExit(f"[doctor-deploy] {label}: version={v} não suportada (use 1)")
+        cfg["version"] = v
+    if "workspace" in raw:
+        cfg["workspace"] = _require_str(raw["workspace"], "workspace", label)
+
+    handlers = {
+        "plugin": _normalize_plugin_section,
+        "limits": _normalize_limits_section,
+        "integration": _normalize_integration_section,
+        "gate": lambda c, v, lb: [_apply_mapped_field(c, k, gv, GATE_KEY_MAP, lb, "gate.") for k, gv in _require_table(v, "gate", lb).items()],
+        "patterns": lambda c, v, lb: [_apply_mapped_field(c, k, pv, PATTERN_KEY_MAP, lb, "patterns.") for k, pv in _require_table(v, "patterns", lb).items()],
+    }
+    for key, val in raw.items():
+        if key in {"project", "version", "workspace"}:
+            continue
+        if key in handlers:
+            handlers[key](cfg, val, label)
+        elif key in GATE_KEY_MAP:
+            _apply_mapped_field(cfg, key, val, GATE_KEY_MAP, label)
+        else:
+            valid = ", ".join(sorted({"project", "version", "workspace", *handlers}))
+            raise SystemExit(f"[doctor-deploy] {label}: chave desconhecida '{key}' (seções válidas: {valid})")
+    return cfg
+
+
+def resolve_plugin_root(raw_root, repo=None):
+    if not raw_root:
+        return None
+    expanded = os.path.expandvars(os.path.expanduser(str(raw_root).strip()))
+    if os.name == "nt" and expanded.startswith("/"):
+        m_drv = re.match(r"^/([a-zA-Z])/(.*)$", expanded)
+        if m_drv:
+            expanded = f"{m_drv.group(1).upper()}:/{m_drv.group(2)}"
+        else:
+            cyg = shutil.which("cygpath")
+            if cyg:
+                conv = subprocess.run([cyg, "-m", expanded], capture_output=True, text=True, encoding="utf-8", check=False)
+                if conv.returncode == 0 and conv.stdout.strip():
+                    expanded = conv.stdout.strip()
+    p = Path(expanded)
+    if not p.is_absolute():
+        base = Path(repo) if repo else root()
+        p = (base / p).resolve()
+    else:
+        p = p.resolve()
+    needed = ("gate.sh", "layers.py", "pre-push.sh")
+    if not all((p / name).is_file() for name in needed):
+        raise SystemExit(
+            f"[doctor-deploy] plugin.root inválido ({p}): precisa apontar para a raiz do plugin contendo gate.sh, layers.py e pre-push.sh"
+        )
+    return p
+
+
+def repo_config(repo=None, required=True):
+    """Lê .doctor-deploy.toml (ou doctor-deploy.toml) da raiz do repo. Falha alto se ausente ou inválido."""
     base = Path(repo) if repo else root()
-    path = base / CONFIG_FILE
-    if not path.is_file():
-        return {}
+    path = find_config_path(base)
+    if path is None:
+        if not required:
+            return {}
+        if (base / LEGACY_CONFIG_FILE).is_file():
+            raise SystemExit(
+                f"[doctor-deploy] {LEGACY_CONFIG_FILE} foi substituído por {CONFIG_FILE}; migre com `gate.sh init`"
+            )
+        raise SystemExit(
+            f"[doctor-deploy] {CONFIG_FILE} (ou {FALLBACK_CONFIG_FILE}) obrigatório na raiz do repo; rode `gate.sh init` para criar"
+        )
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = loads_toml(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise SystemExit(f"[doctor-deploy] {CONFIG_FILE} ilegível: {exc}")
-    if not isinstance(data, dict):
-        raise SystemExit(f"[doctor-deploy] {CONFIG_FILE} ilegível: esperado objeto JSON")
-    return data
+        raise SystemExit(f"[doctor-deploy] {path.name} ilegível: {exc}")
+    return _normalize_repo_config(data, path.name)
 
 
 def cfg_limit(cfg, key, default):
     limits = cfg.get("limits")
     if not isinstance(limits, dict) or key not in limits:
         return default
-    val = limits[key]
-    if isinstance(val, bool) or not isinstance(val, int) or val <= 0:
-        raise SystemExit(f"[doctor-deploy] {CONFIG_FILE}: limits.{key} deve ser inteiro positivo")
-    return val
+    return _require_pos_int(limits[key], f"limits.{key}", CONFIG_FILE)
 
 
 def matches_any(path, patterns):
@@ -1324,6 +1704,10 @@ def cmd_write(quality_skipped, layers_raw):
 
 
 def cmd_check(sha):
+    repo = root()
+    cfg = repo_config(repo)
+    if cfg.get("pluginRoot"):
+        resolve_plugin_root(cfg["pluginRoot"], repo)
     receipt = load_json(receipt_path())
     if not receipt or receipt.get("version") != VERSION or receipt.get("result") != "green":
         print("[doctor-deploy] recibo ausente ou inválido", file=sys.stderr)
@@ -1356,9 +1740,15 @@ def cmd_print():
 
 
 def cmd_preflight():
-    # Só avisos: no portão, cada um destes vira skip, não vermelho.
+    # Valida .doctor-deploy.toml (obrigatório) e imprime avisos das camadas opcionais.
     repo = root()
     cfg = repo_config(repo)
+    if cfg.get("pluginRoot"):
+        p_root = resolve_plugin_root(cfg["pluginRoot"], repo)
+        print(f"[doctor-deploy] ok: plugin.root -> {p_root.as_posix()}", file=sys.stderr)
+    else:
+        cfg_file = find_config_path(repo)
+        print(f"[doctor-deploy] ok: {cfg_file.name} (project={cfg['project']})", file=sys.stderr)
     def say(ok, msg_ok, msg_warn):
         print(f"[doctor-deploy] ok: {msg_ok}" if ok else f"[doctor-deploy] aviso: {msg_warn}", file=sys.stderr)
     base = base_sha(cfg)
@@ -1369,6 +1759,20 @@ def cmd_preflight():
         "nenhum artefato de cobertura (lcov, Cobertura XML, coverprofile do Go, .resultset.json do SimpleCov): se o quality não gerar um, o diff-cover vai pular")
     for tool in needs_consent():
         print(f"[doctor-deploy] aviso: {tool} sem consentimento (gate.sh consent {tool} yes|no)", file=sys.stderr)
+
+
+def cmd_config_validate():
+    repo = root()
+    cfg = repo_config(repo)
+    if cfg.get("pluginRoot"):
+        resolve_plugin_root(cfg["pluginRoot"], repo)
+
+
+def cmd_config_plugin_root():
+    repo = root()
+    cfg = repo_config(repo)
+    if cfg.get("pluginRoot"):
+        print(resolve_plugin_root(cfg["pluginRoot"], repo).as_posix())
 
 
 def cmd_config_quality():
@@ -1540,12 +1944,116 @@ def suggest_quality(repo, stacks):
     return ""
 
 
+def _toml_fmt(val):
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    if isinstance(val, int):
+        return str(val)
+    if isinstance(val, list):
+        return "[" + ", ".join(_toml_fmt(item) for item in val) + "]"
+    return json.dumps(str(val), ensure_ascii=False)
+
+
+def _derive_project_name(repo):
+    remote = git("remote", "get-url", "origin", check=False)
+    if remote.returncode == 0 and remote.stdout.strip():
+        tail = remote.stdout.strip().rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+        if tail.endswith(".git"):
+            tail = tail[:-4]
+        if tail:
+            return tail
+    return repo.name
+
+
+def _read_legacy_json(repo):
+    legacy_path = repo / LEGACY_CONFIG_FILE
+    if not legacy_path.is_file():
+        return {}
+    try:
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"[doctor-deploy] {LEGACY_CONFIG_FILE} ilegível para migração: {exc}")
+    if not isinstance(legacy, dict):
+        raise SystemExit(f"[doctor-deploy] {LEGACY_CONFIG_FILE} ilegível para migração: esperado objeto JSON")
+    return legacy
+
+
+def _toml_pairs(source, mapping):
+    out = []
+    for camel, snake in mapping:
+        val = source.get(camel, source.get(snake))
+        if val is not None:
+            out.append(f"{snake} = {_toml_fmt(val)}")
+    return out
+
+
+def _optional_toml_section(title, source, mapping):
+    if not isinstance(source, dict) or not source:
+        return []
+    pairs = _toml_pairs(source, mapping)
+    return ["", f"[{title}]", *pairs] if pairs else []
+
+
+def _render_init_toml(proj_name, legacy, plugin_root=""):
+    lines = [
+        "# Marcador e configuração obrigatória do doctor-deploy (inspirado no .ai-memory.toml).",
+        "version = 1",
+        f"project = {_toml_fmt(proj_name)}",
+    ]
+    ws = legacy.get("workspace")
+    if isinstance(ws, str) and ws.strip():
+        lines.append(f"workspace = {_toml_fmt(ws.strip())}")
+    raw_root = plugin_root or legacy.get("pluginRoot") or ""
+    p_root = raw_root.strip() if isinstance(raw_root, str) else ""
+    lines.extend(["", "[plugin]", f"root = {_toml_fmt(p_root)}"] if p_root else ["", "# [plugin]", '# root = "~/.gemini/config/plugins/doctor-deploy"'])
+
+    gate_pairs = _toml_pairs(legacy, (
+        ("baseBranch", "base_branch"), ("protectedBranches", "protected_branches"),
+        ("quality", "quality"), ("coverageFiles", "coverage_files"),
+        ("ignorePaths", "ignore_paths"), ("disableLayers", "disable_layers"),
+    ))
+    default_gate = [
+        '# base_branch = "main"', '# protected_branches = ["main", "master"]',
+        '# quality = "bun run quality"', '# coverage_files = ["coverage/lcov.info"]',
+        '# ignore_paths = ["src/legacy/**"]', '# disable_layers = ["mutation"]',
+    ]
+    lines.extend(["", "[gate]", *(gate_pairs or default_gate)])
+    lines.extend(_optional_toml_section("limits", legacy.get("limits"), (("size", "size"), ("cc", "cc"))))
+    lines.extend(_optional_toml_section("patterns", legacy, (("dbModules", "db_modules"), ("realDbPatterns", "real_db_patterns"))))
+    lines.extend(_optional_toml_section("integration", legacy.get("integration"), (("dataDirs", "data_dirs"), ("uiDirs", "ui_dirs"), ("ignore", "ignore"))))
+    return "\n".join(lines) + "\n"
+
+
+def cmd_init(force=False, project="", plugin_root=""):
+    repo = root()
+    os.chdir(repo)
+    try:
+        existing = find_config_path(repo)
+    except SystemExit:
+        if not force:
+            raise
+        existing = None
+    if existing and not force:
+        raise SystemExit(f"[doctor-deploy] já existe {existing.name}; use --force para sobrescrever")
+    legacy = _read_legacy_json(repo)
+    proj_name = (project or legacy.get("project") or _derive_project_name(repo)).strip()
+    text = _render_init_toml(proj_name, legacy, plugin_root=plugin_root)
+    _normalize_repo_config(loads_toml(text), CONFIG_FILE)
+    (repo / CONFIG_FILE).write_text(text, encoding="utf-8")
+    msg = f"[doctor-deploy] criado {CONFIG_FILE} (project={proj_name})"
+    if (repo / LEGACY_CONFIG_FILE).is_file():
+        msg += f" — migrado de {LEGACY_CONFIG_FILE}; pode remover {LEGACY_CONFIG_FILE}"
+    print(msg, file=sys.stderr)
+
+
 def discover_report(repo, current_quality="", quality_error=""):
     branch_run = git("symbolic-ref", "--quiet", "--short", "HEAD", check=False)
     branch = branch_run.stdout.strip() if branch_run.returncode == 0 else "HEAD"
     cfg_error = ""
+    cfg_path = None
     try:
-        cfg = repo_config(repo)
+        cfg_path = find_config_path(repo)
+        cfg = repo_config(repo, required=False)
     except SystemExit as exc:
         cfg = {}
         cfg_error = str(exc)
@@ -1568,9 +2076,15 @@ def discover_report(repo, current_quality="", quality_error=""):
     suggested = suggest_quality(repo, stacks)
     cov_files = [p.relative_to(repo).as_posix() for p, _ in find_coverages(repo, cfg)]
     consent_pending = needs_consent()
+    legacy_exists = (repo / LEGACY_CONFIG_FILE).is_file()
     gaps = []
     if cfg_error:
         gaps.append(cfg_error)
+    elif cfg_path is None:
+        if legacy_exists:
+            gaps.append(f"{LEGACY_CONFIG_FILE} precisa migrar para {CONFIG_FILE} (rode gate.sh init)")
+        else:
+            gaps.append(f"sem {CONFIG_FILE} (rode gate.sh init)")
     if quality_error:
         gaps.append(quality_error)
     elif not current_quality and not quality_skip_allowed():
@@ -1599,7 +2113,10 @@ def discover_report(repo, current_quality="", quality_error=""):
             "hooksManagers": managers,
         },
         "config": {
-            "exists": (repo / CONFIG_FILE).is_file(),
+            "exists": cfg_path is not None,
+            "path": cfg_path.name if cfg_path else None,
+            "required": True,
+            "legacyJsonExists": legacy_exists,
             "data": cfg,
             **({"error": cfg_error} if cfg_error else {}),
         },
@@ -1679,11 +2196,25 @@ def main():
     if cmd == "consent":
         cmd_consent(argv[1], argv[2])
         return
+    if cmd == "config-validate":
+        cmd_config_validate()
+        return
+    if cmd == "config-plugin-root":
+        cmd_config_plugin_root()
+        return
     if cmd == "config-quality":
         cmd_config_quality()
         return
     if cmd == "config-branches":
         cmd_config_branches()
+        return
+    if cmd == "init":
+        force = "--force" in argv
+        idx_p = argv.index("--project") if "--project" in argv else -1
+        proj = argv[idx_p + 1] if 0 <= idx_p and idx_p + 1 < len(argv) else ""
+        idx_r = argv.index("--plugin-root") if "--plugin-root" in argv else -1
+        proot = argv[idx_r + 1] if 0 <= idx_r and idx_r + 1 < len(argv) else ""
+        cmd_init(force=force, project=proj, plugin_root=proot)
         return
     if cmd == "discover":
         as_json = "--json" in argv

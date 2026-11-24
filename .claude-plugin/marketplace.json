@@ -7,7 +7,7 @@
       "name": "doctor-deploy",
       "source": "./",
       "description": "Local push/merge gate with a receipt, language-agnostic.",
-      "version": "0.0.2",
+      "version": "0.0.3",
       "category": "development",
       "tags": ["git", "quality-gate", "testing"]
     }

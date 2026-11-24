@@ -5,17 +5,35 @@
 set -eu
 
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+if [ ! -f "$SKILL_DIR/layers.py" ] && [ -f "$SKILL_DIR/../../layers.py" ]; then
+  SKILL_DIR=$(CDPATH= cd -- "$SKILL_DIR/../.." && pwd)
+fi
+PYTHON=python3
+"$PYTHON" -c '' >/dev/null 2>&1 || PYTHON=python
+command -v "$PYTHON" >/dev/null 2>&1 || { echo "[doctor-deploy] python ausente" >&2; exit 1; }
+export PYTHONUTF8=1
+
+if [ "${DD_PLUGIN_FORWARDED:-0}" != 1 ]; then
+  if cfg_root=$("$PYTHON" "$SKILL_DIR/layers.py" config-plugin-root); then
+    if [ -n "$cfg_root" ]; then
+      cfg_root=$(CDPATH= cd -- "$cfg_root" && pwd)
+      if [ "$cfg_root" != "$SKILL_DIR" ]; then
+        export DD_PLUGIN_FORWARDED=1
+        exec "$cfg_root/pre-push.sh" "$@"
+      fi
+    fi
+  else
+    exit 1
+  fi
+fi
+
 GATE=$SKILL_DIR/gate.sh
 protected=${PUSH_GATE_BRANCHES:-}
-if [ -z "$protected" ] && [ -f .doctor-deploy.json ]; then
-  PYTHON=python3
-  "$PYTHON" -c '' >/dev/null 2>&1 || PYTHON=python
-  if command -v "$PYTHON" >/dev/null 2>&1; then
-    export PYTHONUTF8=1
-    if ! protected=$("$PYTHON" "$SKILL_DIR/layers.py" config-branches); then
-      exit 1
-    fi
-  fi
+if ! cfg_branches=$("$PYTHON" "$SKILL_DIR/layers.py" config-branches); then
+  exit 1
+fi
+if [ -z "$protected" ]; then
+  protected=$cfg_branches
 fi
 protected=${protected:-main,master}
 zero=0000000000000000000000000000000000000000
