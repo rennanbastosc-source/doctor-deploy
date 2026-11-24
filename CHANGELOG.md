@@ -1,7 +1,14 @@
 # Changelog
 
-## Não lançado
+## 0.0.2 — 2026-11-24
 
+Camada agnóstica à stack de CI, autoconfigurável por agente, com suporte a monorepos e execução em CI:
+
+- Portabilidade e desempenho (#38): fallback do plugin Antigravity no shim, `encoding="utf-8"` explícito, suporte a `uv.lock`/`poetry.lock`/`Pipfile.lock` via `pip-audit` e `added_lines_map` em lote.
+- Base dinâmica e manifesto opcional `.doctor-deploy.json` (#39): detecção via `origin/HEAD`, `DOCTOR_DEPLOY_BASE` e overrides gerais (`quality`, `baseBranch`, `protectedBranches`, `limits`, `coverageFiles`, `ignorePaths`, `dbModules`, `realDbPatterns`, `integration`, `disableLayers`) com validação fail-closed.
+- Descoberta estruturada para agentes (#40): comando `gate.sh discover [--json]` inspecionando Git, CI, stacks, gerenciadores de hook, cobertura e `gaps`.
+- Suporte a monorepos e múltiplos subprojetos (#41): cobertura mesclada de subdiretórios com rebase de caminhos, `tsconfig.json`/`go.mod` por subpacote, resolução Python aninhada e `audit` por subdiretório.
+- Modo CI e GitHub Action (#42): `gate.sh ci [--base <ref>] [--no-quality] [--json]` e `action.yml` para validação em PRs no GitHub Actions.
 - Setup orientado ao CI: o `SETUP.md` manda ler a config de CI e reproduzir cada portão no `quality` (instalação travada, lint em modo checagem, audit), e propor um CI quando não houver.
 - Camada `deps` removida: lock fora de sincronia é portão do CI (`npm ci`, `--frozen-lockfile`, `go mod tidy -diff`...), reproduzido no `quality`. Fecha #29.
 - `prepare` recusa o recibo se HEAD mudar ou a árvore sujar durante o portão (#27).
