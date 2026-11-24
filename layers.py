@@ -351,6 +351,17 @@ def internal_target(target, repo):
     return "/" not in target and ((repo / top).is_dir() or (repo / "src" / top).is_dir())
 
 
+def mock_finding(found, path, text, repo, graph):
+    """(vermelho?, motivo) para um alvo de mock num teste, ou None se ele é externo ou é injeção de banco real."""
+    if not (internal_target(found, repo) or graph.resolve(found, path)):
+        return None
+    if DB_MODULE.search(found):
+        return None if REAL_DB.search(text) else (True, f"mocka o banco ({found}); use banco real em memória")
+    if re.split(r"[/.]", found.rstrip("/"))[-1] == os.path.basename(path).split(".")[0]:
+        return True, f"mocka o próprio módulo testado ({found})"
+    return False, f"mocka código próprio ({found}); mock só na fronteira"
+
+
 def mocks_layer(repo, base, warnings):
     """Só linhas adicionadas: mock antigo em teste editado não acusa."""
     if not base:
@@ -364,22 +375,13 @@ def mocks_layer(repo, base, warnings):
             continue
         text = blob("HEAD", path) or ""
         lines = text.splitlines()
-        stem = os.path.basename(path).split(".")[0]
         for num in added_lines(base, path):
             line = lines[num - 1] if 0 < num <= len(lines) else ""
             for found in (*MOCK_JS.findall(line), *MOCK_PY.findall(line)):
-                if not (internal_target(found, repo) or graph.resolve(found, path)):
-                    continue
-                last = re.split(r"[/.]", found.rstrip("/"))[-1]
-                if DB_MODULE.search(found):
-                    if not REAL_DB.search(text):
-                        warnings.append(f"mocks: {path}:{num} mocka o banco ({found}); use banco real em memória")
-                        red = True
-                elif last == stem:
-                    warnings.append(f"mocks: {path}:{num} mocka o próprio módulo testado ({found})")
-                    red = True
-                else:
-                    warnings.append(f"mocks: {path}:{num} mocka código próprio ({found}); mock só na fronteira")
+                finding = mock_finding(found, path, text, repo, graph)
+                if finding:
+                    red = red or finding[0]
+                    warnings.append(f"mocks: {path}:{num} {finding[1]}")
     return "red" if red else "green"
 
 
