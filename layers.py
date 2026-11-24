@@ -25,85 +25,53 @@ except ModuleNotFoundError:  # pragma: no cover - fallback para Python <= 3.10
     tomllib = None
 
 
-def _strip_toml_comment(line):
-    in_dq = False
-    in_sq = False
+def _scan_toml_unquoted(text):
+    """Retorna (pares (idx, ch) fora de aspas, aspa aberta ao final)."""
+    out = []
+    quote = ""
     escaped = False
-    for idx, ch in enumerate(line):
+    for idx, ch in enumerate(text):
         if escaped:
             escaped = False
-            continue
-        if in_dq:
-            if ch == "\\":
+        elif quote:
+            if quote == '"' and ch == "\\":
                 escaped = True
-            elif ch == '"':
-                in_dq = False
-        elif in_sq:
-            if ch == "'":
-                in_sq = False
+            elif ch == quote:
+                quote = ""
+        elif ch in ('"', "'"):
+            quote = ch
         else:
-            if ch == '"':
-                in_dq = True
-            elif ch == "'":
-                in_sq = True
-            elif ch == "#":
-                return line[:idx]
+            out.append((idx, ch))
+    return out, quote
+
+
+def _strip_toml_comment(line):
+    unquoted, _ = _scan_toml_unquoted(line)
+    for idx, ch in unquoted:
+        if ch == "#":
+            return line[:idx]
     return line
 
 
 def _split_toml_kv(line):
-    in_dq = False
-    in_sq = False
-    escaped = False
-    for idx, ch in enumerate(line):
-        if escaped:
-            escaped = False
-            continue
-        if in_dq:
-            if ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_dq = False
-        elif in_sq:
-            if ch == "'":
-                in_sq = False
-        else:
-            if ch == '"':
-                in_dq = True
-            elif ch == "'":
-                in_sq = True
-            elif ch == "=":
-                return line[:idx].strip(), line[idx + 1 :].strip()
+    unquoted, _ = _scan_toml_unquoted(line)
+    for idx, ch in unquoted:
+        if ch == "=":
+            return line[:idx].strip(), line[idx + 1 :].strip()
     raise ValueError(f"linha inválida sem '=': {line!r}")
 
 
 def _brackets_balanced(expr):
+    unquoted, open_quote = _scan_toml_unquoted(expr)
     depth = 0
-    in_dq = False
-    in_sq = False
-    escaped = False
-    for ch in expr:
-        if escaped:
-            escaped = False
-            continue
-        if in_dq:
-            if ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_dq = False
-        elif in_sq:
-            if ch == "'":
-                in_sq = False
-        else:
-            if ch == '"':
-                in_dq = True
-            elif ch == "'":
-                in_sq = True
-            elif ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-    return depth <= 0 and not in_dq and not in_sq
+    for _, ch in unquoted:
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth < 0:
+                raise ValueError(f"colchete ']' sem abertura: {expr}")
+    return depth == 0 and not open_quote
 
 
 def _parse_toml_basic_str(s):
@@ -1761,13 +1729,6 @@ def cmd_preflight():
         print(f"[doctor-deploy] aviso: {tool} sem consentimento (gate.sh consent {tool} yes|no)", file=sys.stderr)
 
 
-def cmd_config_validate():
-    repo = root()
-    cfg = repo_config(repo)
-    if cfg.get("pluginRoot"):
-        resolve_plugin_root(cfg["pluginRoot"], repo)
-
-
 def cmd_config_plugin_root():
     repo = root()
     cfg = repo_config(repo)
@@ -2024,6 +1985,27 @@ def _render_init_toml(proj_name, legacy, plugin_root=""):
     return "\n".join(lines) + "\n"
 
 
+def _parse_init_args(argv):
+    force, project, plugin_root = False, "", ""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--force":
+            force = True
+            i += 1
+        elif arg in ("--project", "--plugin-root"):
+            if i + 1 >= len(argv) or not argv[i + 1].strip():
+                raise SystemExit(f"[doctor-deploy] {arg} exige um valor")
+            if arg == "--project":
+                project = argv[i + 1].strip()
+            else:
+                plugin_root = argv[i + 1].strip()
+            i += 2
+        else:
+            raise SystemExit(f"[doctor-deploy] opção desconhecida em init: {arg}")
+    return force, project, plugin_root
+
+
 def cmd_init(force=False, project="", plugin_root=""):
     repo = root()
     os.chdir(repo)
@@ -2036,7 +2018,12 @@ def cmd_init(force=False, project="", plugin_root=""):
     if existing and not force:
         raise SystemExit(f"[doctor-deploy] já existe {existing.name}; use --force para sobrescrever")
     legacy = _read_legacy_json(repo)
-    proj_name = (project or legacy.get("project") or _derive_project_name(repo)).strip()
+    if project:
+        proj_name = _require_str(project, "--project", "init")
+    elif "project" in legacy:
+        proj_name = _require_str(legacy["project"], "project", LEGACY_CONFIG_FILE)
+    else:
+        proj_name = _derive_project_name(repo)
     text = _render_init_toml(proj_name, legacy, plugin_root=plugin_root)
     _normalize_repo_config(loads_toml(text), CONFIG_FILE)
     (repo / CONFIG_FILE).write_text(text, encoding="utf-8")
@@ -2196,9 +2183,6 @@ def main():
     if cmd == "consent":
         cmd_consent(argv[1], argv[2])
         return
-    if cmd == "config-validate":
-        cmd_config_validate()
-        return
     if cmd == "config-plugin-root":
         cmd_config_plugin_root()
         return
@@ -2209,11 +2193,7 @@ def main():
         cmd_config_branches()
         return
     if cmd == "init":
-        force = "--force" in argv
-        idx_p = argv.index("--project") if "--project" in argv else -1
-        proj = argv[idx_p + 1] if 0 <= idx_p and idx_p + 1 < len(argv) else ""
-        idx_r = argv.index("--plugin-root") if "--plugin-root" in argv else -1
-        proot = argv[idx_r + 1] if 0 <= idx_r and idx_r + 1 < len(argv) else ""
+        force, proj, proot = _parse_init_args(argv[1:])
         cmd_init(force=force, project=proj, plugin_root=proot)
         return
     if cmd == "discover":

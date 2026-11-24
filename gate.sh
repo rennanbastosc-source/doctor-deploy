@@ -25,6 +25,7 @@ case "$cmd" in
   preflight|install-hook|cc|integration|prepare|ci|check|hook-one)
     command -v "$PYTHON" >/dev/null 2>&1 || die "python ausente"
     if [ "${DD_PLUGIN_FORWARDED:-0}" != 1 ]; then
+      # config-plugin-root valida .doctor-deploy.toml e resolve [plugin] root numa única chamada.
       cfg_root=$("$PYTHON" "$PY" config-plugin-root) || exit 1
       if [ -n "$cfg_root" ]; then
         cfg_root=$(CDPATH= cd -- "$cfg_root" && pwd)
@@ -34,7 +35,6 @@ case "$cmd" in
         fi
       fi
     fi
-    "$PYTHON" "$PY" config-validate
     ;;
 esac
 
@@ -99,7 +99,7 @@ write_shim() {
 #!/bin/sh
 # doctor-deploy: shim
 for d in "\${DOCTOR_DEPLOY_HOME:-}" "$SKILL_DIR" "\$HOME/.agents/skills/doctor-deploy" "\$HOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy" "\$HOME/.gemini/config/plugins/doctor-deploy"; do
-  [ -n "\$d" ] && [ -f "\$d/pre-push.sh" ] && exec "\$d/pre-push.sh"
+  [ -n "\$d" ] && [ -f "\$d/pre-push.sh" ] && exec "\$d/pre-push.sh" "\$@"
 done
 best=
 for d in "\$HOME"/.claude/plugins/cache/*/doctor-deploy/*; do
@@ -112,7 +112,7 @@ for d in "\$HOME"/.claude/plugins/cache/*/doctor-deploy/*; do
   fi
   if [ -z "\$best" ] || [ "\$cand" -nt "\$best" ]; then best=\$cand; fi
 done
-[ -n "\$best" ] && exec "\$best"
+[ -n "\$best" ] && exec "\$best" "\$@"
 branches=",\${PUSH_GATE_BRANCHES:-main,master},"
 while read -r _l _ls remote _rs; do
   case "\$branches" in *",\${remote#refs/heads/},"*)

@@ -600,8 +600,25 @@ quality = "sh scripts/custom.sh"
 size = 5
 cc = 20
 """)
-assert d["project"] == "demo" and d["limits"]["size"] == 5 and d["gate"]["protected_branches"] == ["main", "trunk"], d' "$SKILL"
+assert d["project"] == "demo" and d["limits"]["size"] == 5 and d["gate"]["protected_branches"] == ["main", "trunk"], d
+try:
+    layers._fallback_toml_loads("project = [\"x\"]]\n")
+    raise AssertionError("colchete sobrando passou")
+except ValueError:
+    pass' "$SKILL"
 rm doctor-deploy.toml
+if "$GATE" init --project >/dev/null 2>&1; then
+  echo "init aceitou --project sem valor" >&2; exit 1
+fi
+if "$GATE" init --opcao-invalida >/dev/null 2>&1; then
+  echo "init aceitou opção desconhecida" >&2; exit 1
+fi
+printf '%s\n' '{"project":123}' > .doctor-deploy.json
+if "$GATE" init 2>&1 | grep -qi "traceback"; then
+  echo "init deu traceback com project não-string no JSON legado" >&2; exit 1
+fi
+"$GATE" init 2>&1 | grep -q "project deve ser string não vazia" || { echo "init não validou project não-string no JSON legado" >&2; exit 1; }
+rm .doctor-deploy.json
 # Migração automática de .doctor-deploy.json via gate.sh init
 cat > .doctor-deploy.json <<'JSON'
 {
