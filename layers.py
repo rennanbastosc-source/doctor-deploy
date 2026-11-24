@@ -981,6 +981,18 @@ def mutant_configured():
     return lock.exists() and "mutant" in lock.read_text(errors="replace") and any(Path(p).exists() for p in (".mutant.yml", "config/mutant.yml"))
 
 
+def mutant_evil(out, repo):
+    """[(onde, o quê)] dos mutantes vivos; "o quê" é a linha mutada (o "+" do diff que o mutant imprime)."""
+    heads = list(MUTANT_EVIL.finditer(out))
+    found = []
+    for i, head in enumerate(heads):
+        block = out[head.end() : heads[i + 1].start() if i + 1 < len(heads) else len(out)]
+        plus = re.search(r"^\+(?!\+\+)\s*(.+)$", block, re.MULTILINE)
+        what = f"mutante `{plus.group(1).strip()[:100]}`" if plus else "mutante"
+        found.append((f"{norm(head.group(2), repo)}:{head.group(3)} {head.group(1)}", what))
+    return found
+
+
 def mutate_mutant(repo, base, warnings):
     if not mutant_configured():
         return None
@@ -995,7 +1007,7 @@ def mutate_mutant(repo, base, warnings):
     run = run_mutator([bundle, "exec", "mutant", "run", "--since", base], "mutant", warnings)
     if run is None:
         return "skip"
-    evil = [(f"{norm(path, repo)}:{line} {subject}", "mutante") for subject, path, line in MUTANT_EVIL.findall(run.stdout)]
+    evil = mutant_evil(run.stdout, repo)
     if run.returncode != 0 and not evil:
         tail = (run.stderr or run.stdout).strip().splitlines()[-1:] or [""]
         warnings.append(f"mutação: mutant saiu {run.returncode} sem mutante vivo ({tail[0][:120]}), skip")
