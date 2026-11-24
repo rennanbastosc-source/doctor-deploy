@@ -231,6 +231,43 @@ printf '%s\n' 'import { Botao } from "./Botao"' 'render(<Botao />)' 'fireEvent.c
 git add -A && git commit -qm "integração real" >/dev/null
 "$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q '"integration": "green"'
 
+# grafo de imports: alias do tsconfig, cobertura transitiva, classificação por import do banco
+mkdir -p "$TMP/grepo" && cd "$TMP/grepo"
+git init -b main >/dev/null
+git config user.email t@example.com
+git config user.name t
+printf '%s\n' 'x' > README.md
+git add README.md && git commit -qm base >/dev/null
+git update-ref refs/remotes/origin/main HEAD
+mkdir -p src/dominio src/api
+# JSONC: comentário, vírgula final e "/*" dentro de string
+printf '%s\n' '{ /* bundler */ "compilerOptions": { "paths": { "~app/*": ["./src/*"], }, } }' > tsconfig.json
+printf '%s\n' 'export const db = {}' > src/db.ts
+printf '%s\n' 'import { db } from "../db"' 'export const regra = () => db' > src/dominio/regra.ts
+printf '%s\n' 'import { regra } from "~app/dominio/regra"' 'export const router = { regra }' > src/api/router.ts
+printf '%s\n' 'const { router } = await import("~app/api/router")' 'const mem = ":memory:"' > src/api/router.test.ts
+"$GATE" integration >/dev/null 2>&1 || { echo "regra coberta pelo teste do router (via alias) foi acusada" >&2; exit 1; }
+printf '%s\n' 'import { db } from "../db"' 'export const outra = () => db' > src/dominio/outra.ts
+if "$GATE" integration >/dev/null 2>&1; then
+  echo "módulo fora das pastas que importa o banco não foi cobrado" >&2
+  exit 1
+fi
+rm src/dominio/outra.ts
+mkdir -p src/a/utils src/b/utils
+printf '%s\n' 'import { db } from "../../db"' 'export const f = () => db' > src/a/utils/format.ts
+cp src/a/utils/format.ts src/b/utils/format.ts
+printf '%s\n' 'import { f } from "./format"' 'const mem = ":memory:"' > src/a/utils/format.test.ts
+if "$GATE" integration >/dev/null 2>&1; then
+  echo "teste de a/utils/format cobriu o homônimo b/utils/format" >&2
+  exit 1
+fi
+rm -r src/a src/b
+printf '%s\n' 'vi.mock("~app/dominio/regra")' 'const { router } = await import("~app/api/router")' 'const mem = ":memory:"' > src/api/router.test.ts
+if "$GATE" integration >/dev/null 2>&1; then
+  echo "módulo mockado no teste de integração contou como coberto" >&2
+  exit 1
+fi
+
 # hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
 mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"
 git init -b main >/dev/null

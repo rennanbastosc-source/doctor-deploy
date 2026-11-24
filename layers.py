@@ -357,6 +357,7 @@ def mocks_layer(repo, base, warnings):
         warnings.append("mocks: sem base, skip")
         return "skip"
     red = False
+    graph = ImportGraph(repo)
     for status, paths in name_status(base):
         path = paths[-1]
         if status.startswith("D") or not is_test(path) or Path(path).suffix not in SOURCE_EXT:
@@ -367,7 +368,7 @@ def mocks_layer(repo, base, warnings):
         for num in added_lines(base, path):
             line = lines[num - 1] if 0 < num <= len(lines) else ""
             for found in (*MOCK_JS.findall(line), *MOCK_PY.findall(line)):
-                if not internal_target(found, repo):
+                if not (internal_target(found, repo) or graph.resolve(found, path)):
                     continue
                 last = re.split(r"[/.]", found.rstrip("/"))[-1]
                 if DB_MODULE.search(found):
@@ -385,36 +386,148 @@ def mocks_layer(repo, base, warnings):
 DATA_DIRS = {"services", "service", "actions", "api", "routes", "routers", "handlers", "controllers", "repositories"}
 UI_DIRS = {"components", "hooks"}
 DATA_FILE = re.compile(r"\.(service|action|actions|router|route|controller|handler|repository)\.[a-z]+$")
-IMPORT_SPEC = re.compile(r"""(?:\bfrom\s+|\bimport\(\s*|\brequire\(\s*)['"]([^'"]+)['"]""")
+IMPORT_SPEC = re.compile(r"""(?:\bfrom\s+|\bimport\(\s*|\brequire\(\s*|^\s*import\s+)['"]([^'"]+)['"]""", re.MULTILINE)
+PY_IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import\b|import\s+([\w.]+))", re.MULTILINE)
 UI_INTERACTION = (re.compile(r"\brender\("), re.compile(r"\b(userEvent|fireEvent)\b"))
+RESOLVE_EXT = (".ts", ".tsx", ".mts", ".js", ".jsx", ".mjs", ".cjs")
+GRAPH_DEPTH = 8
 
 
-def integration_kind(path):
-    """'data' (service, action, rota...), 'ui' (componente, hook) ou None."""
-    if not is_source(path):
+def strip_jsonc(text):
+    """Tira comentário // e /* */ fora de string. "./src/*" tem /* dentro da string."""
+    out, i, quote = [], 0, None
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch == '"':
+            quote = ch
+            out.append(ch)
+        elif text.startswith("//", i):
+            while i < len(text) and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = len(text) if end < 0 else end + 2
+            continue
+        else:
+            out.append(ch)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def load_aliases(repo):
+    """[(prefixo, [pastas])] de compilerOptions.paths do tsconfig.json, relativos à raiz do repo."""
+    try:
+        config = json.loads(strip_jsonc((repo / "tsconfig.json").read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        return []
+    options = config.get("compilerOptions") or {}
+    base = Path(options.get("baseUrl") or ".")
+    aliases = []
+    for key, targets in (options.get("paths") or {}).items():
+        prefix = key[:-1] if key.endswith("*") else key
+        dirs = [str(base / (t[:-1] if t.endswith("*") else t)) for t in targets if isinstance(t, str)]
+        aliases.append((prefix, dirs))
+    # Prefixo mais longo primeiro: "@/lib/" ganha de "@/".
+    return sorted(aliases, key=lambda item: -len(item[0]))
+
+
+class ImportGraph:
+    """Imports resolvidos para arquivos do repo, lidos da working tree e guardados em cache."""
+
+    def __init__(self, repo):
+        self.repo = repo
+        self.aliases = load_aliases(repo)
+        self.cache = {}
+
+    def text(self, path):
+        try:
+            return (self.repo / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def existing(self, base):
+        """Caminho relativo do primeiro arquivo que a base resolve, ou None."""
+        base = Path(os.path.normpath(base))
+        candidates = [base]
+        if base.suffix in {".js", ".jsx", ".mjs"}:
+            candidates += [base.with_suffix(ext) for ext in (".ts", ".tsx", ".mts")]
+        candidates += [Path(f"{base}{ext}") for ext in RESOLVE_EXT]
+        candidates += [base / f"index{ext}" for ext in RESOLVE_EXT]
+        for item in candidates:
+            if (self.repo / item).is_file():
+                return item.as_posix()
+        return None
+
+    def resolve(self, spec, src):
+        if spec.startswith("."):
+            return self.existing(Path(src).parent / spec)
+        for prefix, dirs in self.aliases:
+            if spec == prefix.rstrip("/") or spec.startswith(prefix):
+                for folder in dirs:
+                    found = self.existing(Path(folder) / spec[len(prefix):])
+                    if found:
+                        return found
+        return None
+
+    def resolve_py(self, spec, src):
+        dots = len(spec) - len(spec.lstrip("."))
+        rest = spec[dots:].replace(".", "/")
+        roots = [Path(src).parents[dots - 1]] if dots else [Path("."), Path("src")]
+        for folder in roots:
+            for item in (folder / f"{rest}.py", folder / rest / "__init__.py"):
+                if rest and (self.repo / item).is_file():
+                    return item.as_posix()
+        return None
+
+    def imports(self, path):
+        if path not in self.cache:
+            text = self.text(path)
+            if path.endswith(".py"):
+                specs = [a or b for a, b in PY_IMPORT.findall(text)]
+                found = {self.resolve_py(spec, path) for spec in specs}
+            else:
+                found = {self.resolve(spec, path) for spec in IMPORT_SPEC.findall(text)}
+            self.cache[path] = {item for item in found if item}
+        return self.cache[path]
+
+    def reach(self, start, skip=()):
+        """Arquivos do repo alcançados a partir de um teste. `skip`: módulos mockados nele,
+        cortados em qualquer profundidade (vi.mock troca o módulo no processo inteiro)."""
+        seen, frontier = set(), list(self.imports(start))
+        for _ in range(GRAPH_DEPTH):
+            frontier = [item for item in frontier if item not in seen and item not in skip]
+            if not frontier:
+                break
+            seen.update(frontier)
+            frontier = [nxt for item in frontier for nxt in self.imports(item)]
+        return seen
+
+
+def is_db_module(path):
+    return DB_MODULE.search(str(Path(path).with_suffix("")).replace("\\", "/")) is not None
+
+
+def integration_kind(path, graph):
+    """'data' (toca o banco, ou service/action/rota...), 'ui' (componente, hook) ou None."""
+    if not is_source(path) or is_db_module(path):
         return None
     parts = set(path.split("/")[:-1])
     base = os.path.basename(path)
     if parts & UI_DIRS:
         return "ui"
+    if any(is_db_module(item) for item in graph.imports(path)):
+        return "data"
     if parts & DATA_DIRS or DATA_FILE.search(base) or Path(base).stem in {"route", "router"}:
         return "data"
     return None
-
-
-def imports_module(text, path):
-    # shortcut: casa o especificador pelo nome do arquivo e pela pasta (ou import relativo),
-    # sem resolver alias do tsconfig. Trocar por resolução real se aparecer falso positivo.
-    item = Path(path)
-    stem, parent = item.stem, item.parent.name
-    if stem == "index":
-        stem, parent = parent, item.parent.parent.name
-    for spec in IMPORT_SPEC.findall(text):
-        bits = spec.split("/")
-        if stem in (bits[-1], Path(bits[-1]).stem):
-            if spec.startswith(".") or parent in bits[:-1]:
-                return True
-    return False
 
 
 def is_integration(text, kind):
@@ -423,33 +536,40 @@ def is_integration(text, kind):
     return all(rx.search(text) for rx in UI_INTERACTION)
 
 
-def test_texts(repo, untracked=False):
+def test_files(untracked=False):
     files = git("ls-files").stdout.splitlines()
     if untracked:
         files += git("ls-files", "--others", "--exclude-standard").stdout.splitlines()
-    out = {}
-    for path in files:
-        if is_test(path) and Path(path).suffix in SOURCE_EXT and not path.endswith(".d.ts"):
-            try:
-                out[path] = (repo / path).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-    return out
+    return [p for p in files if is_test(p) and Path(p).suffix in SOURCE_EXT and not p.endswith(".d.ts")]
+
+
+def covered_by_integration(graph, untracked=False):
+    """{kind: arquivos alcançados por algum teste de integração daquele tipo}."""
+    covered = {"data": set(), "ui": set()}
+    for test in test_files(untracked):
+        text = graph.text(test)
+        kinds = [kind for kind in covered if is_integration(text, kind)]
+        if not kinds:
+            continue
+        mocked = {graph.resolve(spec, test) for spec in MOCK_JS.findall(text)}
+        reached = graph.reach(test, skip={item for item in mocked if item})
+        for kind in kinds:
+            covered[kind] |= reached
+    return covered
 
 
 def integration_gaps(repo, rows, untracked=False):
-    tests = None
-    gaps = []
+    graph = ImportGraph(repo)
+    touched = []
     for status, paths in rows:
         path = paths[-1]
-        kind = None if status.startswith("D") else integration_kind(path)
-        if kind is None:
-            continue
-        if tests is None:
-            tests = test_texts(repo, untracked)
-        if not any(imports_module(text, path) and is_integration(text, kind) for text in tests.values()):
-            gaps.append((path, kind))
-    return gaps
+        kind = None if status.startswith("D") else integration_kind(path, graph)
+        if kind:
+            touched.append((path, kind))
+    if not touched:
+        return []
+    covered = covered_by_integration(graph, untracked)
+    return [(path, kind) for path, kind in touched if path not in covered[kind]]
 
 
 GAP_HINT = {
