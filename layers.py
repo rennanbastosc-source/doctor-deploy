@@ -271,17 +271,17 @@ def parse_cobertura(text, repo):
     return cov, br
 
 
-def go_module(repo):
+def go_module(pkg_dir):
     try:
-        found = re.search(r"^module\s+(\S+)", (repo / "go.mod").read_text(encoding="utf-8"), re.MULTILINE)
+        found = re.search(r"^module\s+(\S+)", (pkg_dir / "go.mod").read_text(encoding="utf-8"), re.MULTILINE)
     except OSError:
         return None
     return found.group(1) if found else None
 
 
-def parse_gocover(text, repo):
+def parse_gocover(text, repo, pkg_root=Path(".")):
     """coverprofile do `go test`: "mod/pkg/f.go:12.13,14.3 1 0". Sem branches; linha = maior hits dos blocos."""
-    module = go_module(repo) or ""
+    module = go_module(repo / pkg_root) or go_module(repo) or ""
     cov = {}
     for line in text.splitlines():
         found = re.match(r"(.+\.go):(\d+)\.\d+,(\d+)\.\d+ \d+ (\d+)$", line.strip())
@@ -290,7 +290,10 @@ def parse_gocover(text, repo):
         name, start, end, hits = found.group(1), int(found.group(2)), int(found.group(3)), int(found.group(4))
         if module and name.startswith(module + "/"):
             name = name[len(module) + 1 :]
-        lines = cov.setdefault(norm(name, repo), {})
+        rel = norm(name, repo)
+        if pkg_root != Path(".") and not (repo / rel).is_file() and (repo / pkg_root / rel).is_file():
+            rel = (pkg_root / rel).as_posix()
+        lines = cov.setdefault(rel, {})
         for num in range(start, end + 1):
             lines[num] = max(lines.get(num, 0), hits)
     return cov, {}
@@ -343,17 +346,7 @@ COVERAGE_FILES = [
     "coverage.out", "cover.out", "coverage/coverage.out",  # go test -coverprofile
     "coverage/.resultset.json",  # SimpleCov (Ruby)
 ]
-
-
-def parse_coverage(artifact, repo):
-    text = artifact.read_text(encoding="utf-8", errors="replace")
-    if artifact.suffix == ".xml":
-        return parse_cobertura(text, repo)
-    if artifact.suffix == ".json":
-        return parse_simplecov(text, repo)
-    if artifact.suffix == ".out":
-        return parse_gocover(text, repo)
-    return parse_lcov(text, repo)
+WALK_SKIP_DIRS = {".git", "node_modules", "dist", ".next", "vendor", "target", ".venv", "__pycache__"}
 
 
 def coverage_candidates(cfg=None):
@@ -361,15 +354,91 @@ def coverage_candidates(cfg=None):
     return list(dict.fromkeys([*extra, *COVERAGE_FILES]))
 
 
-def fresh_coverage(repo, started, cfg=None):
+def pkg_root_for(rel_artifact):
+    rel_s = rel_artifact.as_posix()
+    for pat in COVERAGE_FILES:
+        if rel_s == pat:
+            return Path(".")
+        if rel_s.endswith("/" + pat):
+            return Path(rel_s[: -len(pat) - 1])
+    return rel_artifact.parent if rel_artifact.parent.name == "coverage" and rel_artifact.parent.parent != Path(".") else Path(".")
+
+
+def find_coverages(repo, cfg=None):
     found = []
+    seen = set()
     for name in coverage_candidates(cfg):
-        path = repo / name
-        if path.is_file() and path.stat().st_mtime >= started - 2:
-            found.append(path)
+        p = repo / name
+        if p.is_file():
+            res = p.resolve()
+            if res not in seen:
+                seen.add(res)
+                found.append((p, pkg_root_for(Path(name))))
+    for dirpath, dirnames, filenames in os.walk(repo):
+        dirnames[:] = [d for d in dirnames if d not in WALK_SKIP_DIRS]
+        cur = Path(dirpath)
+        for fname in filenames:
+            p = cur / fname
+            rel = p.relative_to(repo).as_posix()
+            if any(rel == pat or rel.endswith("/" + pat) for pat in COVERAGE_FILES):
+                res = p.resolve()
+                if res not in seen:
+                    seen.add(res)
+                    found.append((p, pkg_root_for(p.relative_to(repo))))
+    return found
+
+
+def rebase_cov(cov, br, repo, pkg_root):
+    if pkg_root == Path("."):
+        return cov, br
+    out_cov, out_br = {}, {}
+    for path, lines in cov.items():
+        new_path = path
+        if not (repo / path).is_file() and (repo / pkg_root / path).is_file():
+            new_path = (pkg_root / path).as_posix()
+        out_cov[new_path] = lines
+        if path in br:
+            out_br[new_path] = br[path]
+    return out_cov, out_br
+
+
+def parse_coverage(artifact, repo, pkg_root=Path(".")):
+    text = artifact.read_text(encoding="utf-8", errors="replace")
+    if artifact.suffix == ".xml":
+        cov, br = parse_cobertura(text, repo)
+    elif artifact.suffix == ".json":
+        cov, br = parse_simplecov(text, repo)
+    elif artifact.suffix == ".out":
+        return parse_gocover(text, repo, pkg_root)
+    else:
+        cov, br = parse_lcov(text, repo)
+    return rebase_cov(cov, br, repo, pkg_root)
+
+
+def fresh_coverages(repo, started, cfg=None):
+    return [(p, pkg) for p, pkg in find_coverages(repo, cfg) if p.stat().st_mtime >= started - 2]
+
+
+def fresh_coverage(repo, started, cfg=None):
+    found = fresh_coverages(repo, started, cfg)
     if not found:
         return None
-    return max(found, key=lambda item: item.stat().st_mtime)
+    return max(found, key=lambda item: item[0].stat().st_mtime)[0]
+
+
+def merge_coverages(artifacts, repo):
+    cov, br = {}, {}
+    for artifact, pkg_root in artifacts:
+        c, b = parse_coverage(artifact, repo, pkg_root)
+        for path, lines in c.items():
+            target = cov.setdefault(path, {})
+            for num, hits in lines.items():
+                target[num] = max(target.get(num, 0), hits)
+        for path, bmap in b.items():
+            target = br.setdefault(path, {})
+            for num, count in bmap.items():
+                target[num] = min(target.get(num, count), count) if num in target else count
+    return cov, br
 
 
 def added_lines_map(base, head="HEAD"):
@@ -406,11 +475,11 @@ def coverage_layer(repo, base, started, warnings, cfg=None):
     if not base:
         warnings.append("diff-cover: sem base, skip")
         return "skip"
-    artifact = fresh_coverage(repo, started, cfg)
-    if artifact is None:
+    artifacts = fresh_coverages(repo, started, cfg)
+    if not artifacts:
         warnings.append("diff-cover: sem lcov/cobertura fresco, skip")
         return "skip"
-    cov, br = parse_coverage(artifact, repo)
+    cov, br = merge_coverages(artifacts, repo)
     added = added_lines_map(base)
     red = False
     for status, paths in name_status(base):
@@ -649,14 +718,15 @@ def strip_jsonc(text):
     return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
 
 
-def load_aliases(repo):
+def load_aliases_file(tsconfig_path, repo):
     """[(prefixo, [pastas])] de compilerOptions.paths do tsconfig.json, relativos à raiz do repo."""
     try:
-        config = json.loads(strip_jsonc((repo / "tsconfig.json").read_text(encoding="utf-8")))
+        config = json.loads(strip_jsonc(tsconfig_path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
         return []
+    pkg_dir = tsconfig_path.parent.relative_to(repo)
     options = config.get("compilerOptions") or {}
-    base = Path(options.get("baseUrl") or ".")
+    base = pkg_dir / (options.get("baseUrl") or ".")
     aliases = []
     for key, targets in (options.get("paths") or {}).items():
         prefix = key[:-1] if key.endswith("*") else key
@@ -666,15 +736,52 @@ def load_aliases(repo):
     return sorted(aliases, key=lambda item: -len(item[0]))
 
 
+def load_aliases(repo):
+    return load_aliases_file(repo / "tsconfig.json", repo)
+
+
+def find_repo_files(repo, filename):
+    found = []
+    for dirpath, dirnames, filenames in os.walk(repo):
+        dirnames[:] = [d for d in dirnames if d not in WALK_SKIP_DIRS]
+        if filename in filenames:
+            p = Path(dirpath) / filename
+            rel_dir = p.parent.relative_to(repo)
+            found.append((rel_dir, p))
+    return sorted(found, key=lambda item: -len(item[0].parts))
+
+
+def is_under(path_str, pkg_dir):
+    if pkg_dir == Path("."):
+        return True
+    prefix = pkg_dir.as_posix()
+    return path_str == prefix or path_str.startswith(prefix + "/")
+
+
 class ImportGraph:
     """Imports resolvidos para arquivos do repo, lidos da working tree e guardados em cache."""
 
     def __init__(self, repo):
         self.repo = repo
-        self.aliases = load_aliases(repo)
+        self.tsconfigs = [(pkg_dir, load_aliases_file(p, repo)) for pkg_dir, p in find_repo_files(repo, "tsconfig.json")]
+        self.aliases = next((al for pkg_dir, al in self.tsconfigs if pkg_dir == Path(".")), [])
+        self.go_mods = [(pkg_dir, go_module(p.parent)) for pkg_dir, p in find_repo_files(repo, "go.mod")]
+        self.go_mods = [(d, m) for d, m in self.go_mods if m]
+        self.module = next((m for d, m in self.go_mods if d == Path(".")), None)
         self.cache = {}
-        self.module = go_module(repo)
         self._rb = None
+
+    def aliases_for(self, src):
+        for pkg_dir, aliases in self.tsconfigs:
+            if is_under(src, pkg_dir):
+                return aliases
+        return self.aliases
+
+    def go_mod_for(self, path):
+        for pkg_dir, mod in self.go_mods:
+            if is_under(path, pkg_dir):
+                return pkg_dir, mod
+        return (Path("."), self.module) if self.module else (Path("."), None)
 
     def text(self, path):
         try:
@@ -698,7 +805,7 @@ class ImportGraph:
     def resolve(self, spec, src):
         if spec.startswith("."):
             return self.existing(Path(src).parent / spec)
-        for prefix, dirs in self.aliases:
+        for prefix, dirs in self.aliases_for(src):
             if spec == prefix.rstrip("/") or spec.startswith(prefix):
                 for folder in dirs:
                     found = self.existing(Path(folder) / spec[len(prefix):])
@@ -709,7 +816,13 @@ class ImportGraph:
     def resolve_py(self, spec, src):
         dots = len(spec) - len(spec.lstrip("."))
         rest = spec[dots:].replace(".", "/")
-        roots = [Path(src).parents[dots - 1]] if dots else [Path("."), Path("src")]
+        if dots:
+            parents = Path(src).parents
+            roots = [parents[dots - 1]] if dots <= len(parents) else []
+        else:
+            roots = []
+            for parent in Path(src).parents:
+                roots.extend((parent, parent / "src"))
         for folder in roots:
             for item in (folder / f"{rest}.py", folder / rest / "__init__.py"):
                 if rest and (self.repo / item).is_file():
@@ -724,10 +837,11 @@ class ImportGraph:
         specs = GO_IMPORT_ONE.findall(text)
         for block in GO_IMPORT_BLOCK.findall(text):
             specs += re.findall(r'"([^"]+)"', block)
+        pkg_dir, module = self.go_mod_for(path)
         found = set()
         for spec in specs:
-            if self.module and spec.startswith(self.module + "/"):
-                found |= self.go_files(spec[len(self.module) + 1 :])
+            if module and spec.startswith(module + "/"):
+                found |= self.go_files(pkg_dir / spec[len(module) + 1 :])
         if path.endswith("_test.go"):
             # O teste compila junto com o pacote da própria pasta.
             found |= self.go_files(Path(path).parent.as_posix())
@@ -933,22 +1047,25 @@ def audit_status(run):
     return "red" if AUDIT_FINDINGS.search(run.stdout + run.stderr) else "error"
 
 
-def audit_layer(base, warnings, cfg=None):
+def audit_layer(base, warnings, repo=None, cfg=None):
     if not base:
         warnings.append("audit: sem base, skip")
         return "skip"
+    repo = repo or root()
     changed = changed_paths(name_status(base))
-    locks = [name for name in changed if name in AUDIT and not is_ignored(name, cfg)]
+    locks = [name for name in changed if os.path.basename(name) in AUDIT and not is_ignored(name, cfg)]
     if not locks:
         return "skip"
     ran = False
     red = False
     seen = set()
     for lock in locks:
-        cmd = AUDIT.get(lock)
-        if not cmd or tuple(cmd) in seen:
+        cmd = AUDIT.get(os.path.basename(lock))
+        lock_dir = Path(lock).parent
+        key = (tuple(cmd or ()), lock_dir.as_posix())
+        if not cmd or key in seen:
             continue
-        seen.add(tuple(cmd))
+        seen.add(key)
         exe = shutil.which(cmd[0])
         if not exe:
             warnings.append(f"audit: {cmd[0]} ausente, skip")
@@ -956,18 +1073,19 @@ def audit_layer(base, warnings, cfg=None):
         # No Windows `npm` é um .cmd: `which` resolve, mas CreateProcess com o nome
         # nu falha (WinError 2). Executa o caminho resolvido.
         try:
-            run = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=AUDIT_TIMEOUT)
+            run = subprocess.run([exe, *cmd[1:]], cwd=str(repo / lock_dir), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=AUDIT_TIMEOUT)
         except subprocess.TimeoutExpired:
             warnings.append(f"audit: {cmd[0]} timeout {AUDIT_TIMEOUT}s, skip")
             continue
         status = audit_status(run)
+        where = f" ({lock_dir.as_posix()})" if lock_dir != Path(".") else ""
         if status == "error":
             tail = (run.stderr or run.stdout).strip().splitlines()[-1:] or [""]
-            warnings.append(f"audit: {cmd[0]} saiu {run.returncode} sem achado ({tail[0][:120]}), skip")
+            warnings.append(f"audit: {cmd[0]}{where} saiu {run.returncode} sem achado ({tail[0][:120]}), skip")
             continue
         ran = True
         if status == "red":
-            warnings.append(f"audit: {cmd[0]} achou vulnerabilidade (npm/pnpm/yarn: high ou critical)")
+            warnings.append(f"audit: {cmd[0]}{where} achou vulnerabilidade (npm/pnpm/yarn: high ou critical)")
             red = True
     if red:
         return "red"
@@ -1133,7 +1251,7 @@ def mutation_layer(repo, base, warnings, cfg=None):
         return "skip"
     # O mutador roda a suíte de novo (o mutant com o SimpleCov ligado em cada mutante): a cobertura
     # do quality é restaurada, senão o próximo prepare herda o lixo pelo merge do SimpleCov.
-    saved = {p: p.read_bytes() for p in (repo / name for name in coverage_candidates(cfg)) if p.is_file()}
+    saved = {p: p.read_bytes() for p, _ in find_coverages(repo, cfg)}
     try:
         for mutate in (mutate_stryker, mutate_gremlins, mutate_mutant):
             result = mutate(repo, base, warnings, cfg)
@@ -1159,7 +1277,7 @@ def cmd_layers(started):
         "cc": lambda: cc_layer(repo, base, warnings, cfg=cfg),
         "mocks": lambda: mocks_layer(repo, base, warnings, cfg),
         "integration": lambda: integration_layer(repo, base, warnings, cfg),
-        "audit": lambda: audit_layer(base, warnings, cfg),
+        "audit": lambda: audit_layer(base, warnings, repo, cfg),
         "mutation": lambda: mutation_layer(repo, base, warnings, cfg),
     }
     layers = {}
@@ -1241,8 +1359,9 @@ def cmd_preflight():
         print(f"[doctor-deploy] ok: {msg_ok}" if ok else f"[doctor-deploy] aviso: {msg_warn}", file=sys.stderr)
     base = base_sha(cfg)
     say(base, f"base {base[:12]}", "sem base diferente do HEAD (origin/HEAD, master, main): as camadas do diff vão pular")
-    cov = next((name for name in coverage_candidates(cfg) if (repo / name).is_file()), None)
-    say(cov, f"cobertura em {cov} (o portão exige que o quality a regenere)",
+    cov_hits = [p.relative_to(repo).as_posix() for p, _ in find_coverages(repo, cfg)]
+    cov = cov_hits[0] if cov_hits else None
+    say(cov, f"cobertura em {', '.join(cov_hits)} (o portão exige que o quality a regenere)",
         "nenhum artefato de cobertura (lcov, Cobertura XML, coverprofile do Go, .resultset.json do SimpleCov): se o quality não gerar um, o diff-cover vai pular")
     for tool in needs_consent():
         print(f"[doctor-deploy] aviso: {tool} sem consentimento (gate.sh consent {tool} yes|no)", file=sys.stderr)
@@ -1443,7 +1562,7 @@ def discover_report(repo, current_quality="", quality_error=""):
     stacks = detect_stacks(repo)
     ci = detect_ci(repo)
     suggested = suggest_quality(repo, stacks)
-    cov_files = [name for name in coverage_candidates(cfg) if (repo / name).is_file()]
+    cov_files = [p.relative_to(repo).as_posix() for p, _ in find_coverages(repo, cfg)]
     consent_pending = needs_consent()
     gaps = []
     if cfg_error:
