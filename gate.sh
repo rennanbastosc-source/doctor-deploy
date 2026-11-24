@@ -22,9 +22,8 @@ tree_clean() {
   [ -z "$(git status --porcelain)" ]
 }
 
-run_quality() {
-  root=$(git rev-parse --show-toplevel)
-  cd "$root"
+# Imprime o comando do entrypoint de quality da raiz, ou nada. Não roda.
+quality_entry() {
   if [ -f package.json ] && command -v "$PYTHON" >/dev/null 2>&1; then
     q=$("$PYTHON" -c'import json; print(json.load(open("package.json")).get("scripts", {}).get("quality", ""))')
     if [ -n "$q" ]; then
@@ -32,19 +31,27 @@ run_quality() {
       if [ -f pnpm-lock.yaml ]; then pm=pnpm; fi
       if [ -f yarn.lock ]; then pm=yarn; fi
       if [ -f bun.lock ] || [ -f bun.lockb ]; then pm=bun; fi
-      echo "[doctor-deploy] quality: $pm run quality" >&2
-      "$pm" run quality
-      return $?
+      echo "$pm run quality"
+      return
     fi
   fi
   if [ -f Makefile ] && grep -q '^quality:' Makefile; then
-    echo "[doctor-deploy] quality: make quality" >&2
-    make quality
-    return $?
+    echo "make quality"
+    return
   fi
   if [ -f scripts/quality.py ]; then
-    echo "[doctor-deploy] quality: $PYTHON scripts/quality.py" >&2
-    "$PYTHON" scripts/quality.py
+    echo "$PYTHON scripts/quality.py"
+  fi
+}
+
+run_quality() {
+  root=$(git rev-parse --show-toplevel)
+  cd "$root"
+  q=$(quality_entry)
+  if [ -n "$q" ]; then
+    echo "[doctor-deploy] quality: $q" >&2
+    # Sem aspas de propósito: o comando é "gerenciador run quality" ou "python scripts/quality.py".
+    $q
     return $?
   fi
   echo "[doctor-deploy] nenhum entrypoint (npm/pnpm/bun/yarn quality, make quality, scripts/quality.py) — quality pulado" >&2
@@ -70,6 +77,30 @@ case "$cmd" in
   consent)
     [ -n "${1:-}" ] && [ -n "${2:-}" ] || die "consent <lizard|mutation> <yes|no>"
     "$PYTHON" "$PY" consent "$1" "$2"
+    ;;
+  preflight)
+    # Confere o repo atual sem rodar nada. Só a falta de quality reprova; o resto vira skip no portão.
+    cd "$(git rev-parse --show-toplevel)"
+    red=0
+    q=$(quality_entry)
+    if [ -n "$q" ]; then
+      echo "[doctor-deploy] ok: quality = $q" >&2
+    elif [ "$(git config --bool --get doctor-deploy.allowNoQuality || true)" = true ]; then
+      echo "[doctor-deploy] aviso: sem entrypoint de quality (liberado por doctor-deploy.allowNoQuality)" >&2
+    else
+      echo "[doctor-deploy] VERMELHO: sem entrypoint de quality (npm/pnpm/bun/yarn quality, make quality, scripts/quality.py)" >&2
+      red=1
+    fi
+    hook=$(git rev-parse --git-common-dir)/hooks/pre-push
+    if [ ! -e "$hook" ]; then
+      echo "[doctor-deploy] aviso: sem hook pre-push (gate.sh install-hook)" >&2
+    elif ! grep -qF "$SKILL_DIR/pre-push.sh" "$hook"; then
+      echo "[doctor-deploy] aviso: o pre-push é do projeto, não o shim da skill; ele não consulta o recibo" >&2
+    else
+      echo "[doctor-deploy] ok: hook pre-push é o shim da skill" >&2
+    fi
+    "$PYTHON" "$PY" preflight
+    exit "$red"
     ;;
   install-hook)
     common=$(git rev-parse --git-common-dir)
@@ -123,6 +154,6 @@ case "$cmd" in
     "$0" prepare
     ;;
   *)
-    die "uso: prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
+    die "uso: preflight | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
     ;;
 esac

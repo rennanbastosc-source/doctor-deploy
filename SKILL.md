@@ -23,6 +23,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 ## Antes de tudo
 
+0. `gate.sh preflight` — confere o repo atual sem rodar nada: entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Só a falta de quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip.
 1. `gate.sh install-hook` — só cria o shim se `.git/hooks/pre-push` não existir. Hook de projeto não se sobrescreve.
 2. `gate.sh needs-consent` — se imprimir `NEED_CONSENT`, pergunte uma vez. `gate.sh consent lizard yes|no` e `gate.sh consent mutation yes|no`. `yes` não instala sozinho: instale no usuário (`pipx` ou `uv tool`), grave a versão no consentimento, não atualize no portão. Sem `pipx`/`uv`, diga isso e deixe a camada em skip. Nunca vire dependência do repo.
 

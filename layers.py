@@ -182,13 +182,15 @@ def parse_cobertura(text, repo):
     return cov
 
 
+COVERAGE_FILES = [
+    "coverage/lcov.info", "lcov.info",
+    "coverage/cobertura-coverage.xml", "coverage/cobertura.xml", "cobertura.xml",
+]
+
+
 def fresh_coverage(repo, started):
-    names = [
-        "coverage/lcov.info", "lcov.info",
-        "coverage/cobertura-coverage.xml", "coverage/cobertura.xml", "cobertura.xml",
-    ]
     found = []
-    for name in names:
+    for name in COVERAGE_FILES:
         path = repo / name
         if path.is_file() and path.stat().st_mtime >= started - 2:
             found.append(path)
@@ -467,12 +469,33 @@ def cmd_print():
         print("[doctor-deploy] nenhuma camada pulada", file=sys.stderr)
 
 
-def cmd_needs():
+def cmd_preflight():
+    # Só avisos: no portão, cada um destes vira skip, não vermelho.
+    repo = root()
+    def say(ok, msg_ok, msg_warn):
+        print(f"[doctor-deploy] ok: {msg_ok}" if ok else f"[doctor-deploy] aviso: {msg_warn}", file=sys.stderr)
+    base = base_sha()
+    say(base, f"base {base[:12]}", "sem base diferente do HEAD (origin/master, origin/main, master, main): as camadas do diff vão pular")
+    cov = next((name for name in COVERAGE_FILES if (repo / name).is_file()), None)
+    say(cov, f"cobertura em {cov} (o portão exige que o quality a regenere)",
+        "nenhum lcov/cobertura XML na raiz: se o quality não gerar um, o diff-cover vai pular")
+    for tool in needs_consent():
+        print(f"[doctor-deploy] aviso: {tool} sem consentimento (gate.sh consent {tool} yes|no)", file=sys.stderr)
+
+
+def needs_consent():
     consent = load_json(consent_path()) or {}
+    tools = []
     if not shutil.which("lizard") and "lizard" not in consent:
-        print("NEED_CONSENT lizard")
+        tools.append("lizard")
     if consent.get("mutation") != "no" and not any(shutil.which(name) for name in ("mutmut", "cargo-mutants")) and "mutation" not in consent:
-        print("NEED_CONSENT mutation")
+        tools.append("mutation")
+    return tools
+
+
+def cmd_needs():
+    for tool in needs_consent():
+        print(f"NEED_CONSENT {tool}")
 
 
 def cmd_consent(tool, answer):
@@ -505,6 +528,9 @@ def main():
         raise SystemExit(cmd_check(argv[1]))
     if cmd == "print-skipped":
         cmd_print()
+        return
+    if cmd == "preflight":
+        cmd_preflight()
         return
     if cmd == "needs-consent":
         cmd_needs()

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prova os 5 casos do recibo, o shim do install-hook num caminho com espaço, hits 0 no lcov o quality vermelho e o quality ausente. Não toca no repo do chamador.
+# Prova os 5 casos do recibo, o shim do install-hook num caminho com espaço, hits 0 no lcov o quality vermelho, o quality ausente e o preflight. Não toca no repo do chamador.
 set -eu
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 ZERO=0000000000000000000000000000000000000000
@@ -23,6 +23,7 @@ export CI=1
 "$GATE" install-hook 2>/dev/null
 HOOK=$TMP/.git/hooks/pre-push
 grep -qF "$SKILL/pre-push.sh" "$HOOK"
+"$GATE" preflight 2>&1 | grep -q "ok: hook pre-push é o shim"
 
 mkdir -p src
 export DD_STAMP="$WORK/stamp"
@@ -136,7 +137,15 @@ fi
 git config doctor-deploy.allowNoQuality true
 "$GATE" prepare >/dev/null 2>&1
 "$GATE" check "$(git rev-parse HEAD)" >/dev/null 2>&1
+if ! "$GATE" preflight >/dev/null 2>&1; then
+  echo "preflight reprovou repo liberado" >&2
+  exit 1
+fi
 git config --unset doctor-deploy.allowNoQuality
+if "$GATE" preflight >/dev/null 2>&1; then
+  echo "preflight aprovou repo sem quality" >&2
+  exit 1
+fi
 if "$GATE" check "$(git rev-parse HEAD)" >/dev/null 2>&1; then
   echo "check aceitou recibo sem quality depois de revogada a liberação" >&2
   exit 1
