@@ -24,7 +24,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 ## Antes de tudo
 
-0. `gate.sh preflight` — confere o repo atual sem rodar nada: entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Só a falta de quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip. **Reprovou, ou avisou de hook ou cobertura na primeira vez neste repo: leia [SETUP.md](SETUP.md) e monte o setup antes de seguir.** O setup termina quando o preflight sai verde e um `quality` real gerou o lcov.
+0. `gate.sh preflight` — confere o repo atual sem rodar nada: entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Só a falta de quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip. **Reprovou, ou avisou de hook ou cobertura na primeira vez neste repo: rode `gate.sh discover --json`, leia [SETUP.md](SETUP.md) e monte o setup antes de seguir.** O setup termina quando o preflight sai verde e um `quality` real gerou o lcov.
 1. `gate.sh install-hook` — só cria o shim se `.git/hooks/pre-push` não existir. Hook de projeto não se sobrescreve.
 2. `gate.sh needs-consent` — se imprimir `NEED_CONSENT`, pergunte uma vez. `gate.sh consent lizard yes|no`: `yes` não instala sozinho: instale no usuário (`pipx` ou `uv tool`), grave a versão no consentimento, não atualize no portão. Sem `pipx`/`uv`, diga isso e deixe a camada em skip. Lizard nunca vira dependência do repo. `gate.sh consent mutation yes|no` só é perguntado quando o projeto já tem o Stryker (dependência de dev do projeto, decisão do dono no setup, [SETUP.md](SETUP.md) §4); `no` desliga a camada nesta máquina.
 
