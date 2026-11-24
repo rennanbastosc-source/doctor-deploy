@@ -19,16 +19,7 @@ SOURCE_EXT = {
     ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs",
     ".java", ".kt", ".rb", ".php", ".c", ".cc", ".cpp", ".h", ".hpp",
 }
-ROOT_LOCKS = {
-    "package.json": [
-        "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
-        "yarn.lock", "bun.lock", "bun.lockb",
-    ],
-    "pyproject.toml": ["uv.lock", "poetry.lock", "pdm.lock", "Pipfile.lock"],
-    "go.mod": ["go.sum"],
-    "Cargo.toml": ["Cargo.lock"],
-    "Gemfile": ["Gemfile.lock"],
-}
+# Lock da raiz -> audit. Lock fora de sincronia com o manifest é portão do CI (instalação travada), reproduzido no quality.
 AUDIT = {
     "package-lock.json": ["npm", "audit", "--audit-level=high"],
     "npm-shrinkwrap.json": ["npm", "audit", "--audit-level=high"],
@@ -154,7 +145,10 @@ def norm(path, repo):
     idx = low.find(repo_low + "/")
     if idx >= 0:
         path = path[idx + len(repo_s) + 1 :]
-    return path.lstrip("./")
+    # Só o prefixo "./": lstrip("./") comeria o ponto de .storybook/, .config/...
+    while path.startswith("./"):
+        path = path[2:]
+    return path.lstrip("/")
 
 
 def parse_lcov(text, repo):
@@ -267,6 +261,7 @@ def simplecov_arms(branches, target):
 COVERAGE_FILES = [
     "coverage/lcov.info", "lcov.info",
     "coverage/cobertura-coverage.xml", "coverage/cobertura.xml", "cobertura.xml",
+    "coverage.xml",  # coverage.py / pytest-cov --cov-report=xml
     "coverage.out", "cover.out", "coverage/coverage.out",  # go test -coverprofile
     "coverage/.resultset.json",  # SimpleCov (Ruby)
 ]
@@ -363,7 +358,10 @@ def size_layer(base, warnings):
 def lizard_map(path):
     if not shutil.which("lizard"):
         return None
-    run = subprocess.run(["lizard", path], capture_output=True, text=True, timeout=60)
+    try:
+        run = subprocess.run(["lizard", path], capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return None
     found = {}
     for line in run.stdout.splitlines():
         if "@" not in line:
@@ -376,7 +374,8 @@ def lizard_map(path):
         token = next((bit for bit in bits if "@" in bit), "")
         name = token.split("@", 1)[0]
         if name:
-            found[name] = ccn
+            # Homônimos ((anonymous), métodos de classes diferentes): vale o maior, senão o último esconde os outros.
+            found[name] = max(found.get(name, 0), ccn)
     return found
 
 
@@ -387,13 +386,15 @@ def cc_layer(repo, base, warnings, rows=None):
     if not base:
         warnings.append("cc: sem base, skip")
         return "skip"
-    red = False
+    red = skipped = False
     for status, paths in (name_status(base) if rows is None else rows):
         path = paths[-1]
         if status.startswith("D") or not is_source(path):
             continue
         head_map = lizard_map(str(repo / path))
         if head_map is None:
+            warnings.append(f"cc: lizard estourou 60s em {path}, skip")
+            skipped = True
             continue
         old_text = blob(base, paths[0])
         old_map = {}
@@ -413,7 +414,7 @@ def cc_layer(repo, base, warnings, rows=None):
             elif old is not None and old <= CC_LIMIT < ccn:
                 warnings.append(f"cc: {path} {name} cruzou {CC_LIMIT} ({old} → {ccn})")
                 red = True
-    return "red" if red else "green"
+    return "red" if red else "skip" if skipped else "green"
 
 
 MOCK_JS = re.compile(r"""\b(?:vi|jest)\.(?:mock|doMock)\(\s*['"]([^'"]+)['"]""")
@@ -423,7 +424,9 @@ DB_MODULE = re.compile(r"(^|[/.])(db|prisma|database|drizzle)([/.]index)?$")
 # Rails: rails_helper/TestCase sobem o banco de teste real. Go: txdb, pgtestdb, embedded-postgres.
 REAL_DB = re.compile(
     r"migrate\(|:memory:|pglite|testcontainers|rails_helper|ActiveSupport::TestCase|ActionDispatch::IntegrationTest"
-    r"|txdb|pgtestdb|embedded.?postgres",
+    r"|txdb|pgtestdb|embedded.?postgres"
+    # Python: Django/pytest-django (banco de teste real), pytest-postgresql, migrations do alembic.
+    r"|django\.test|django_db|TransactionTestCase|postgresql_proc|command\.upgrade\(",
     re.IGNORECASE,
 )
 # Mock do banco sem seam para injetar banco real: stub de query/persistência do ActiveRecord, sqlmock do Go.
@@ -693,7 +696,8 @@ def integration_kind(path, graph):
         return None
     parts = set(path.split("/")[:-1])
     base = os.path.basename(path)
-    if parts & UI_DIRS:
+    # UI é JS/TS: components/ do ViewComponent ou hooks/ em Python/Go seguem a classificação normal.
+    if parts & UI_DIRS and Path(base).suffix in JS_EXT:
         return "ui"
     if graph.touches_db(path) or any(is_db_module(item) for item in graph.imports(path)):
         return "data"
@@ -794,39 +798,17 @@ def cmd_cc():
     return 1 if status == "red" else 0
 
 
-def deps_layer(base, warnings):
-    if not base:
-        warnings.append("deps: sem base, skip")
-        return "skip"
-    changed = changed_paths(name_status(base))
-    red = False
-    for manifest, locks in ROOT_LOCKS.items():
-        if manifest not in changed:
-            continue
-        if not any(lock in changed for lock in locks):
-            warnings.append(f"deps: {manifest} mudou sem lock")
-            red = True
-    return "red" if red else "green"
-
-
 AUDIT_TIMEOUT = 120
-# Achado real: o resumo "N vulnerabilities" (npm & cia., govulncheck) ou o "Vulnerabilities found!" do bundle-audit.
-AUDIT_FINDINGS = re.compile(r"\d+\s+vulnerabilit|Vulnerabilities found", re.IGNORECASE)
-AUDIT_NETWORK = re.compile(
-    r"\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|no such host|dial tcp|getaddrinfo|SocketError"
-    r"|Could not fetch|unable to access|Failed to connect|Could not connect|failed to update)\b",
-    re.IGNORECASE,
-)
+# Achado real: o resumo "N vulnerabilities" / "N high severity vulnerabilities" (npm & cia., govulncheck,
+# cargo audit) ou o "Vulnerabilities found!" do bundle-audit.
+AUDIT_FINDINGS = re.compile(r"\d+\s+(?:\w+\s+){0,2}vulnerabilit|Vulnerabilities found", re.IGNORECASE)
 
 
 def audit_status(run):
-    """'green', 'red' ou 'network'. O advisory do npm cita "network" no texto: com achado, é vermelho."""
+    """'green', 'red' ou 'error'. Saída não-zero sem achado (rede, comando inexistente, sem lock) não é vulnerabilidade."""
     if run.returncode == 0:
         return "green"
-    out = run.stdout + run.stderr
-    if not AUDIT_FINDINGS.search(out) and AUDIT_NETWORK.search(out):
-        return "network"
-    return "red"
+    return "red" if AUDIT_FINDINGS.search(run.stdout + run.stderr) else "error"
 
 
 def audit_layer(base, warnings):
@@ -834,7 +816,7 @@ def audit_layer(base, warnings):
         warnings.append("audit: sem base, skip")
         return "skip"
     changed = changed_paths(name_status(base))
-    locks = [name for name in changed if name in {lock for locks in ROOT_LOCKS.values() for lock in locks}]
+    locks = [name for name in changed if name in AUDIT]
     if not locks:
         return "skip"
     ran = False
@@ -857,8 +839,9 @@ def audit_layer(base, warnings):
             warnings.append(f"audit: {cmd[0]} timeout {AUDIT_TIMEOUT}s, skip")
             continue
         status = audit_status(run)
-        if status == "network":
-            warnings.append(f"audit: {cmd[0]} skip (rede)")
+        if status == "error":
+            tail = (run.stderr or run.stdout).strip().splitlines()[-1:] or [""]
+            warnings.append(f"audit: {cmd[0]} saiu {run.returncode} sem achado ({tail[0][:120]}), skip")
             continue
         ran = True
         if status == "red":
@@ -1045,16 +1028,23 @@ def cmd_layers(started):
     os.chdir(repo)
     base = base_sha()
     warnings = []
-    layers = {
-        "diff_cover": coverage_layer(repo, base, started, warnings),
-        "size": size_layer(base, warnings),
-        "cc": cc_layer(repo, base, warnings),
-        "mocks": mocks_layer(repo, base, warnings),
-        "integration": integration_layer(repo, base, warnings),
-        "deps": deps_layer(base, warnings),
-        "audit": audit_layer(base, warnings),
-        "mutation": mutation_layer(repo, base, warnings),
+    steps = {
+        "diff_cover": lambda: coverage_layer(repo, base, started, warnings),
+        "size": lambda: size_layer(base, warnings),
+        "cc": lambda: cc_layer(repo, base, warnings),
+        "mocks": lambda: mocks_layer(repo, base, warnings),
+        "integration": lambda: integration_layer(repo, base, warnings),
+        "audit": lambda: audit_layer(base, warnings),
+        "mutation": lambda: mutation_layer(repo, base, warnings),
     }
+    layers = {}
+    for name, step in steps.items():
+        # Erro inesperado numa camada é vermelho com nome e motivo, sem derrubar as outras nem o JSON.
+        try:
+            layers[name] = step()
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"{name}: erro inesperado ({type(exc).__name__}: {exc})")
+            layers[name] = "red"
     red = [name for name, status in layers.items() if status == "red"]
     skipped = [name for name, status in layers.items() if status == "skip"]
     payload = {"layers": layers, "skipped": skipped, "warnings": warnings, "red": red, "base_sha": base}

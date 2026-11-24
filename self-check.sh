@@ -140,6 +140,25 @@ fi
 printf '%s\n' 'SF:src/a.py' 'DA:1,1' 'BRDA:1,0,0,1' 'BRDA:1,0,1,2' 'end_of_record' > coverage/lcov.info
 "$PYTHON" "$PY" layers --started 0 >/dev/null
 rm -rf coverage
+# coverage.xml na raiz (pytest-cov --cov-report=xml) é lido: hits 0 é vermelho
+printf '%s\n' '<coverage><packages><package><classes><class filename="src/a.py"><lines><line number="1" hits="0"/></lines></class></classes></package></packages></coverage>' > coverage.xml
+if "$PYTHON" "$PY" layers --started 0 >/dev/null; then
+  echo "hits 0 no coverage.xml não ficou vermelho" >&2
+  exit 1
+fi
+rm coverage.xml
+# pasta oculta: "./.storybook/x.ts" no relatório casa com ".storybook/x.ts" do diff
+"$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); import layers; from pathlib import Path
+assert layers.norm("./.storybook/x.ts", Path("/r")) == ".storybook/x.ts"
+assert layers.norm("/r/.config/a.ts", Path("/r")) == ".config/a.ts"' "$SKILL"
+# audit: saída não-zero sem achado (comando inexistente, rede, sem lock) é skip; achado é vermelho
+"$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); import layers; from subprocess import CompletedProcess as P
+s = lambda out: layers.audit_status(P([], 1, out, ""))
+assert s("3 high severity vulnerabilities") == "red", s("3 high severity vulnerabilities")
+assert s("found 2 vulnerabilities (1 moderate, 1 high)") == "red"
+assert s("Usage Error: Couldnt find a script named audit") == "error"
+assert s("npm ERR! code ENOLOCK") == "error"
+assert layers.audit_status(P([], 0, "", "")) == "green"' "$SKILL"
 
 # mocks: banco e módulo testado são vermelho; outro módulo próprio é aviso; banco real injetado passa
 mock_red() {
@@ -174,20 +193,20 @@ if command -v lizard >/dev/null 2>&1; then
   fi
   rm src/complexa.py
   "$GATE" cc >/dev/null 2>&1
-fi
-
-mkdir -p "$TMP/deprepo" && cd "$TMP/deprepo"
-git init -b main >/dev/null
-git config user.email t@example.com
-git config user.name t
-printf '%s\n' '{"name":"t"}' > package.json
-git add package.json && git commit -m a >/dev/null
-git update-ref refs/remotes/origin/master HEAD
-printf '%s\n' '{"name":"t","x":1}' > package.json
-git add package.json && git commit -m b >/dev/null
-if "$PYTHON" "$PY" layers --started 0 >/dev/null; then
-  echo "manifest sem lock não ficou vermelho" >&2
-  exit 1
+  # homônimos: a anônima simples depois da complexa não esconde a complexa
+  {
+    echo 'const a = [1].map((x) => {'
+    i=0
+    while [ $i -lt 16 ]; do echo "  if (x === $i) return $i"; i=$((i + 1)); done
+    echo '  return -1'
+    echo '})'
+    echo 'const b = [1].map((x) => x)'
+  } > src/anon.js
+  if "$GATE" cc >/dev/null 2>&1; then
+    echo "cc: (anonymous) simples escondeu a (anonymous) acima de 15" >&2
+    exit 1
+  fi
+  rm src/anon.js
 fi
 
 # quality que sai 2 (como make com erro) é vermelho, não skip; sem entrypoint é skip
@@ -225,6 +244,21 @@ if "$GATE" check "$(git rev-parse HEAD)" >/dev/null 2>&1; then
 fi
 "$PYTHON" -c 'import json,sys; r=json.load(open(sys.argv[1])); assert "quality" in r["skipped"], r' \
   "$(git rev-parse --git-dir)/doctor-deploy/receipt.json"
+# quality que reescreve arquivo versionado (formatter com --write) não grava recibo
+mkdir -p scripts
+printf '%s\n' 'x' > fmt.txt
+printf '#!/bin/sh\necho y >> fmt.txt\n' > scripts/quality.sh
+git add -A && git commit -qm fmt
+rm -f "$(git rev-parse --git-dir)/doctor-deploy/receipt.json"
+if "$GATE" prepare >/dev/null 2>&1; then
+  echo "quality que sujou a árvore gravou recibo" >&2
+  exit 1
+fi
+git checkout -q -- fmt.txt
+# package.json ilegível: mensagem clara, não traceback
+printf '%s\n' '{' > package.json
+"$GATE" preflight 2>&1 | grep -q "package.json ilegível" || { echo "package.json inválido sem mensagem clara" >&2; exit 1; }
+rm package.json
 
 # integração: service e componente tocados precisam de teste de integração
 mkdir -p "$TMP/irepo" && cd "$TMP/irepo"
@@ -258,6 +292,18 @@ printf '%s\n' 'import { Botao } from "./Botao"' 'render(<Botao />)' 'fireEvent.c
 "$GATE" integration >/dev/null 2>&1
 git add -A && git commit -qm "integração real" >/dev/null
 "$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q '"integration": "green"'
+# hooks/ e components/ fora de JS/TS não são UI (hooks em Python, ViewComponent do Rails)
+mkdir -p src/hooks app/components
+printf '%s\n' 'x = 1' > src/hooks/stripe.py
+printf '%s\n' 'class BotaoComponent; end' > app/components/botao_component.rb
+"$GATE" integration >/dev/null 2>&1 || { echo "hooks/ em Python ou components/ em Ruby cobrado como UI" >&2; exit 1; }
+rm -r src/hooks app/components
+# Python: banco real do Django/pytest-django conta como integração
+mkdir -p app/services tests
+printf '%s\n' 'def total(): return 1' > app/services/conta.py
+printf '%s\n' 'import pytest' 'from app.services.conta import total' '@pytest.mark.django_db' 'def test_total(): assert total() == 1' > tests/test_conta.py
+"$GATE" integration >/dev/null 2>&1 || { echo "teste com pytest.mark.django_db não contou como integração" >&2; exit 1; }
+rm -r app tests
 
 # grafo de imports: alias do tsconfig, cobertura transitiva, classificação por import do banco
 mkdir -p "$TMP/grepo" && cd "$TMP/grepo"
@@ -432,5 +478,28 @@ rm "$HHOOK"
 grep -q 'scripts/pre-push.sh' "$HHOOK"
 "$GATE" preflight 2>&1 | grep -q "ok: hook pre-push -> scripts/pre-push.sh"
 : | "$HHOOK" 2>&1 | grep -q via-projeto
+
+# core.hooksPath (husky e afins): install-hook e preflight usam a pasta que o git lê
+newrepo hprepo
+git config core.hooksPath .githooks
+printf '#!/bin/sh\ntrue\n' > q.sh && git add q.sh && git commit -qm a
+"$GATE" install-hook 2>/dev/null
+grep -q "doctor-deploy: shim" .githooks/pre-push || { echo "install-hook ignorou core.hooksPath" >&2; exit 1; }
+"$GATE" preflight 2>&1 | grep -q "ok: hook pre-push é o shim" || { echo "preflight ignorou core.hooksPath" >&2; exit 1; }
+
+# hook com dois refs protegidos e quality que lê stdin: o segundo ref ainda passa pelo portão
+newrepo sirepo
+mkdir -p scripts
+printf '%s\n' 'x' > a.txt
+printf '#!/bin/sh\ncat >/dev/null\n' > scripts/quality.sh
+git add -A && git commit -qm a
+OLD=$(git rev-parse HEAD)
+printf '%s\n' 'y' > a.txt && git commit -qam b
+if printf '%s %s %s %s\n%s %s %s %s\n' \
+  refs/heads/main "$(git rev-parse HEAD)" refs/heads/main "$ZERO" \
+  refs/heads/rel "$OLD" refs/heads/rel "$ZERO" | PUSH_GATE_BRANCHES=main,rel "$SKILL/pre-push.sh" 2>/dev/null; then
+  echo "quality que lê stdin engoliu o segundo ref do push" >&2
+  exit 1
+fi
 
 echo "self-check ok"

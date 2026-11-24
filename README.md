@@ -4,7 +4,7 @@
 
 Portão local de push e merge para agentes de código (Claude Code, Codex e qualquer agente que leia skills em `~/.agents/skills`). Ele roda o `quality` do projeto **uma vez**, grava um recibo do commit testado e, no push, confere o recibo em vez de rodar tudo de novo. Repetir um verde já gravado é o bug, não rigor.
 
-Além do `quality`, o portão olha o **diff** contra a branch principal:
+O `quality` é do projeto e reproduz localmente os portões do CI (instalação travada, lint, tipos, build, testes); o setup guiado do [SETUP.md](SETUP.md) monta isso a partir da config de CI. Além dele, o portão olha o **diff** contra a branch principal:
 
 | Camada | Vermelho quando |
 |---|---|
@@ -13,7 +13,6 @@ Além do `quality`, o portão olha o **diff** contra a branch principal:
 | CC | função nova com complexidade ciclomática acima de 15, ou alterada que cruza 15 ([lizard](https://github.com/terryyin/lizard)) |
 | Mocks | teste novo que mocka o banco (`vi.mock` do módulo de banco, stub de `find`/`update!` do ActiveRecord, `sqlmock`) ou o próprio módulo testado |
 | Integração | service, action, rota, controller, model ou repositório tocado sem um teste que o alcance e use banco real; componente tocado sem teste que renderize e interaja |
-| Lock | manifest mudou e o lock não |
 | Audit | vulnerabilidade quando o lock mudou (`npm`/`pnpm`/`yarn`/`bun audit`, `govulncheck`, `bundle-audit`, `cargo audit`) |
 | Mutação | mutante vivo numa linha alterada: o código mudou e nenhum teste quebrou (Stryker, gremlins, mutant) |
 
@@ -24,7 +23,7 @@ Ferramenta ausente, sem rede ou estouro de tempo vira **skip com aviso**, nunca 
 | | JS/TS | Python | Go | Rails |
 |---|---|---|---|---|
 | Quality | `npm`/`pnpm`/`bun`/`yarn run quality` | `scripts/quality.py` | `make quality` ou `scripts/quality.sh` | `scripts/quality.sh` |
-| Cobertura | lcov, Cobertura | lcov, Cobertura | `coverage.out` | `coverage/.resultset.json` (SimpleCov) |
+| Cobertura | lcov, Cobertura | lcov, Cobertura (`coverage.xml`) | `coverage.out` | `coverage/.resultset.json` (SimpleCov) |
 | Grafo de integração | imports, `tsconfig` paths | imports | pacotes do `go.mod` | constantes (Zeitwerk) e nome do teste |
 | Mutação | Stryker | — | gremlins | mutant (Linux e macOS) |
 

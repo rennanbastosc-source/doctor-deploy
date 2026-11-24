@@ -25,7 +25,13 @@ tree_clean() {
 # Imprime o comando do entrypoint de quality da raiz, ou nada. Não roda.
 quality_entry() {
   if [ -f package.json ] && command -v "$PYTHON" >/dev/null 2>&1; then
-    q=$("$PYTHON" -c'import json; print(json.load(open("package.json")).get("scripts", {}).get("quality", ""))')
+    q=$("$PYTHON" -c'
+import json, sys
+try:
+    print(json.load(open("package.json")).get("scripts", {}).get("quality", ""))
+except (OSError, ValueError, AttributeError) as exc:
+    sys.exit(f"[doctor-deploy] package.json ilegível: {exc}")
+')
     if [ -n "$q" ]; then
       pm=npm
       if [ -f pnpm-lock.yaml ]; then pm=pnpm; fi
@@ -147,9 +153,11 @@ case "$cmd" in
       echo "[doctor-deploy] VERMELHO: sem entrypoint de quality (npm/pnpm/bun/yarn quality, make quality, scripts/quality.sh, scripts/quality.py)" >&2
       red=1
     fi
-    hook=$(git rev-parse --git-common-dir)/hooks/pre-push
+    # --git-path respeita core.hooksPath (husky e afins): é a pasta que o git de fato lê.
+    hook=$(git rev-parse --git-path hooks)/pre-push
+    hooks_path=$(git config --get core.hooksPath || true)
     if [ ! -e "$hook" ]; then
-      echo "[doctor-deploy] aviso: sem hook pre-push (gate.sh install-hook)" >&2
+      echo "[doctor-deploy] aviso: sem hook pre-push em $hook (gate.sh install-hook)" >&2
     elif project_hook_delegates; then
       if grep -q 'scripts/pre-push.sh' "$hook"; then
         echo "[doctor-deploy] ok: hook pre-push -> scripts/pre-push.sh -> skill" >&2
@@ -158,6 +166,8 @@ case "$cmd" in
       fi
     elif grep -q "doctor-deploy: shim" "$hook" || grep -qF "$SKILL_DIR/pre-push.sh" "$hook"; then
       echo "[doctor-deploy] ok: hook pre-push é o shim da skill" >&2
+    elif [ -n "$hooks_path" ]; then
+      echo "[doctor-deploy] aviso: core.hooksPath=$hooks_path e o pre-push de lá não cita a skill; confira que ele delega a ela (SETUP.md §5)" >&2
     else
       echo "[doctor-deploy] aviso: o pre-push é do projeto e não delega à skill; ele não consulta o recibo" >&2
     fi
@@ -166,13 +176,13 @@ case "$cmd" in
     ;;
   install-hook)
     cd "$(git rev-parse --show-toplevel)"
-    common=$(git rev-parse --git-common-dir)
-    hook=$common/hooks/pre-push
+    hooks=$(git rev-parse --git-path hooks)
+    hook=$hooks/pre-push
     if [ -e "$hook" ]; then
       echo "[doctor-deploy] hook já existe, não sobrescrevo: $hook" >&2
       exit 0
     fi
-    mkdir -p "$common/hooks"
+    mkdir -p "$hooks"
     if project_hook_delegates; then
       # Hook do projeto primeiro: ele faz os passos próprios e delega à skill. Raiz resolvida por worktree.
       printf '#!/bin/sh\nexec "$(git rev-parse --show-toplevel)/scripts/pre-push.sh"\n' > "$hook"
@@ -185,6 +195,7 @@ case "$cmd" in
   prepare)
     tree_clean || die "tree suja (inclui untracked) — recibo recusado"
     command -v "$PYTHON" >/dev/null 2>&1 || die "python ausente"
+    tested=$(git rev-parse HEAD)
     started=$(date +%s)
     quality_skipped=0
     set +e
@@ -204,6 +215,12 @@ case "$cmd" in
     printf '%s\n' "$layers_json"
     if [ "$lstatus" -ne 0 ]; then
       die "GATE RED nas camadas do diff"
+    fi
+    # O recibo é do commit testado: quality que reescreve arquivo ou commit no meio do caminho invalidam.
+    [ "$(git rev-parse HEAD)" = "$tested" ] || die "HEAD mudou durante o portão ($tested -> $(git rev-parse HEAD)) — recibo recusado"
+    if ! tree_clean; then
+      git status --short >&2
+      die "o portão deixou a árvore suja (quality reescreveu arquivo ou gerou artefato fora do .gitignore) — recibo recusado"
     fi
     "$PYTHON" "$PY" write-receipt --quality-skipped "$quality_skipped" --layers "$layers_json"
     "$PYTHON" "$PY" print-skipped

@@ -21,7 +21,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     *",$branch,"*) ;;
     *) continue ;;
   esac
-  if ! "$GATE" hook-one "$local_sha"; then
+  # stdin fechado: o quality não pode engolir as linhas dos próximos refs.
+  if ! "$GATE" hook-one "$local_sha" </dev/null; then
     fail=1
   fi
 done

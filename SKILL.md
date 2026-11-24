@@ -32,7 +32,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 `gate.sh prepare`
 
-- Tree suja, inclusive untracked, recusa o recibo. Não commite por conta própria.
+- Tree suja, inclusive untracked, recusa o recibo, antes ou depois do quality (quality que reescreve arquivo ou gera artefato fora do `.gitignore` também). HEAD que muda durante o portão também recusa. Não commite por conta própria.
 - Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality` (se o `make` existir), `sh scripts/quality.sh`, `python3 scripts/quality.py`. Sem entrypoint: vermelho. A exceção é explícita e por clone: `git config doctor-deploy.allowNoQuality true`. Com ela, `quality` entra em `skipped` e o `check` só aceita esse recibo enquanto a chave existir.
 - Antes de escrever os testes do diff: `gate.sh cc` (CC das funções novas ou alteradas, inclusive o não commitado; acima de 15, quebre a função) e depois `gate.sh integration` (módulos tocados sem teste de integração; escreva os que ele listar). Ordem completa em [SETUP.md](SETUP.md) §3.
 - Depois do quality, as camadas olham o diff contra `origin/master`, `origin/main`, `master` ou `main`. Sem fetch. Sem base, a camada é skip, não vermelho.
@@ -60,11 +60,12 @@ Deleção de branch não passa pelo portão e não desliga o portão dos outros 
 | CC | função nova com CC > 15, ou alterada que cruza 15, se `lizard` existir | sem lizard, sem aceite, teste, gerado |
 | Mocks | linha adicionada em teste que mocka o módulo de banco (sem banco real no mesmo arquivo) ou o próprio módulo testado; stub de query/persistência do ActiveRecord (`receive(:find)`, `:update!`...); `sqlmock` | sem base. Mock de outro módulo próprio é aviso |
 | Integração | service, action, rota, router, controller ou repositório tocado (em Rails, também model e job; em Go, pacote que importa o banco) sem teste que o alcance e use banco real; componente ou hook tocado sem teste que renderize e interaja. "Alcança" segue imports (TS/JS, Python), pacotes do `go.mod` e constantes do Zeitwerk | sem base |
-| Lock | manifest da raiz mudou no diff e nenhum lock correspondente mudou | sem base |
-| Audit | high/critical quando o lock mudou e a ferramenta existe (`npm`/`pnpm`/`yarn`/`bun audit`, `govulncheck`, `bundle-audit`, `cargo audit`) | ferramenta ausente, rede, lock intocado |
+| Audit | high/critical quando o lock mudou e a ferramenta existe (`npm`/`pnpm`/`yarn`/`bun audit`, `govulncheck`, `bundle-audit`, `cargo audit`) | ferramenta ausente, rede, erro da ferramenta sem achado, lock intocado |
 | Mutação | mutante vivo (`Survived`/`NoCoverage`) do Stryker numa linha adicionada de fonte JS/TS. Equivalente sai com `// Stryker disable next-line <Operador>: <motivo>` | sem Stryker em `node_modules`, recusa, sem base, sem relatório, ou timeout de 180s |
 
 No diff a barra é 100% das linhas e branches que o relatório lista: hits 0 ou branch não exercitada é vermelho. Linha que o relatório não lista não é executável comprovada. O piso global é do projeto (`thresholds`), medido no setup, e só sobe.
+
+Lock fora de sincronia com o manifest, lint, tipos e build são portões do CI: o quality os reproduz ([SETUP.md](SETUP.md) §0), a skill não os reimplementa.
 
 Tetos 400 e 15 são constantes da skill. Não crie config por repo. Não abaixe threshold, não alargue exclude, não apague teste para passar.
 
