@@ -103,6 +103,51 @@ printf '%s\n' 'SF:src/a.py' 'DA:1,1' 'end_of_record' > coverage/lcov.info
 printf '%s\n' 'SF:src/outro.py' 'DA:1,1' 'end_of_record' > coverage/lcov.info
 "$PYTHON" "$PY" layers --started 0 >/dev/null
 
+# branch não tomada em linha alterada é vermelho, mesmo com hits 1
+printf '%s\n' 'SF:src/a.py' 'DA:1,1' 'BRDA:1,0,0,1' 'BRDA:1,0,1,0' 'end_of_record' > coverage/lcov.info
+if "$PYTHON" "$PY" layers --started 0 >/dev/null; then
+  echo "branch não tomada no diff não ficou vermelho" >&2
+  exit 1
+fi
+printf '%s\n' 'SF:src/a.py' 'DA:1,1' 'BRDA:1,0,0,1' 'BRDA:1,0,1,2' 'end_of_record' > coverage/lcov.info
+"$PYTHON" "$PY" layers --started 0 >/dev/null
+rm -rf coverage
+
+# mocks: banco e módulo testado são vermelho; outro módulo próprio é aviso; banco real injetado passa
+mock_red() {
+  git add -A && git commit -qm "$1" >/dev/null
+  if "$PYTHON" "$PY" layers --started 0 >/dev/null; then
+    echo "mocks: $1 não ficou vermelho" >&2
+    exit 1
+  fi
+  git reset -q --hard HEAD~1
+}
+write_test() { mkdir -p src/__tests__ && printf '%s\n' "$@" > src/__tests__/svc.test.ts; }
+write_test 'vi.mock("@/lib/prisma")'
+mock_red "mock do banco"
+write_test 'vi.mock("../svc", () => ({}))'
+mock_red "mock do módulo testado"
+write_test 'vi.mock("@/lib/logger")' 'await migrate(db)' 'vi.doMock("#/db/index", () => ({ db }))'
+git add -A && git commit -qm "mock na fronteira e banco real" >/dev/null
+out=$("$PYTHON" "$PY" layers --started 0)
+printf '%s\n' "$out" | grep -q 'mocks: src/__tests__/svc.test.ts:1 .*(@/lib/logger)'
+
+# cc: função nova acima de 15 na working tree, antes do commit
+if command -v lizard >/dev/null 2>&1; then
+  {
+    echo 'def f(x):'
+    i=0
+    while [ $i -lt 16 ]; do echo "    if x == $i: return $i"; i=$((i + 1)); done
+    echo '    return -1'
+  } > src/complexa.py
+  if "$GATE" cc >/dev/null 2>&1; then
+    echo "cc não pegou função nova acima de 15 antes do commit" >&2
+    exit 1
+  fi
+  rm src/complexa.py
+  "$GATE" cc >/dev/null 2>&1
+fi
+
 mkdir -p "$TMP/deprepo" && cd "$TMP/deprepo"
 git init -b main >/dev/null
 git config user.email t@example.com

@@ -23,7 +23,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 ## Antes de tudo
 
-0. `gate.sh preflight` — confere o repo atual sem rodar nada: entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Só a falta de quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip.
+0. `gate.sh preflight` — confere o repo atual sem rodar nada: entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Só a falta de quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip. **Reprovou, ou avisou de hook ou cobertura na primeira vez neste repo: leia [SETUP.md](SETUP.md) e monte o setup antes de seguir.** O setup termina quando o preflight sai verde e um `quality` real gerou o lcov.
 1. `gate.sh install-hook` — só cria o shim se `.git/hooks/pre-push` não existir. Hook de projeto não se sobrescreve.
 2. `gate.sh needs-consent` — se imprimir `NEED_CONSENT`, pergunte uma vez. `gate.sh consent lizard yes|no` e `gate.sh consent mutation yes|no`. `yes` não instala sozinho: instale no usuário (`pipx` ou `uv tool`), grave a versão no consentimento, não atualize no portão. Sem `pipx`/`uv`, diga isso e deixe a camada em skip. Nunca vire dependência do repo.
 
@@ -33,7 +33,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 - Tree suja, inclusive untracked, recusa o recibo. Não commite por conta própria.
 - Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality`, `python3 scripts/quality.py`. Sem entrypoint: vermelho. A exceção é explícita e por clone: `git config doctor-deploy.allowNoQuality true`. Com ela, `quality` entra em `skipped` e o `check` só aceita esse recibo enquanto a chave existir.
-- Node primeiro. Python pelo `scripts/quality.py`. Rust/Go só se houver `make quality`. O resto não é portão escondido.
+- Antes de escrever os testes do diff, `gate.sh cc`: CC das funções novas ou alteradas, inclusive o não commitado. Acima de 15, quebre a função e só então teste.
 - Depois do quality, as camadas olham o diff contra `origin/master`, `origin/main`, `master` ou `main`. Sem fetch. Sem base, a camada é skip, não vermelho.
 - Verde grava `$(git rev-parse --git-dir)/doctor-deploy/receipt.json` com SHA testado, SHA da base, versão e camadas puladas. Imprima as puladas. Pare.
 
@@ -54,14 +54,15 @@ Deleção de branch não passa pelo portão e não desliga o portão dos outros 
 | Camada | Vermelho | Skip barulhento |
 |---|---|---|
 | Quality | entrypoint falhou | sem entrypoint |
-| Diff-cover | linha alterada de fonte presente no lcov/cobertura fresco com hits 0 | sem artefato, artefato velho, ou sem base. Arquivo fora do relatório é aviso, não verde silencioso e não vermelho |
+| Diff-cover | linha alterada de fonte presente no lcov/cobertura fresco com hits 0 ou com branch não exercitada | sem artefato, artefato velho, ou sem base. Arquivo fora do relatório é aviso, não verde silencioso e não vermelho |
 | Tamanho | arquivo novo de fonte acima de 400 linhas, ou editado que sai de ≤400 para >400 | teste, gerado, sem base |
 | CC | função nova com CC > 15, ou alterada que cruza 15, se `lizard` existir | sem lizard, sem aceite, teste, gerado |
+| Mocks | linha adicionada em teste que mocka o módulo de banco (sem banco real no mesmo arquivo) ou o próprio módulo testado | sem base. Mock de outro módulo próprio é aviso |
 | Lock | manifest da raiz mudou no diff e nenhum lock correspondente mudou | sem base |
 | Audit | high/critical quando o lock mudou e a ferramenta existe | ferramenta ausente, rede, lock intocado |
 | Mutação | nunca | sem mutador, recusa, ou timeout de 180s. O resultado vai no aviso, não no vermelho |
 
-Diff-cover não exige 100% das linhas alteradas. Linha que o relatório não lista não é executável comprovada. Hits 0 é a barra.
+No diff a barra é 100% das linhas e branches que o relatório lista: hits 0 ou branch não exercitada é vermelho. Linha que o relatório não lista não é executável comprovada. O piso global é do projeto (`thresholds`), medido no setup, e só sobe.
 
 Tetos 400 e 15 são constantes da skill. Não crie config por repo. Não abaixe threshold, não alargue exclude, não apague teste para passar.
 
@@ -73,4 +74,6 @@ Vermelho: no máximo 3 rodadas. Conserte a causa, rode `prepare` de novo. Reparo
 
 Merge pela UI do GitHub e `gh pr merge` não passam pelo hook. O recibo cobre o agente e o `git push`. Convenção de PR, spec, schema em produção e prova de deploy ficam no `AGENTS.md` do projeto. Se esse arquivo for mais rígido, ele ganha.
 
-**Frota:** o §8 diz que commit que já vai ser pushado é o push. Isso anula o recibo até o projeto ganhar a mesma ressalva: recibo válido, ou recibo válido mais delta só `*.md`, é o verde. Não edite o repo daqui. O hook do frota, se já existir, não é sobrescrito; enquanto ele não consultar o recibo, o `git push` para `master` ainda roda o quality do projeto.
+Se o `AGENTS.md` disser que o check de CI é o recibo da PR (frota-impacto), não rode `prepare` em PR: o portão seria pago duas vezes. O recibo vale para o push direto na branch principal.
+
+Fora do setup ([SETUP.md](SETUP.md)), não edite o repo do projeto por conta da skill.

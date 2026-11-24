@@ -77,6 +77,10 @@ case "$cmd" in
     [ -n "${1:-}" ] || die "check exige um SHA"
     "$PYTHON" "$PY" check "$1"
     ;;
+  cc)
+    # Antes de escrever os testes: CC das funções do diff, inclusive o que ainda não foi commitado.
+    "$PYTHON" "$PY" cc
+    ;;
   needs-consent)
     "$PYTHON" "$PY" needs-consent
     ;;
@@ -172,6 +176,6 @@ case "$cmd" in
     "$0" prepare
     ;;
   *)
-    die "uso: preflight | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
+    die "uso: preflight | cc | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
     ;;
 esac

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-VERSION = 2
+VERSION = 3
 SIZE_LIMIT = 400
 CC_LIMIT = 15
 SOURCE_EXT = {
@@ -38,7 +38,8 @@ AUDIT = {
     "bun.lockb": ["bun", "audit"],
 }
 def git(*args, check=True):
-    run = subprocess.run(["git", *args], capture_output=True, text=True)
+    # UTF-8 explícito: sem PYTHONUTF8 o Windows decodifica em cp1252 e quebra em acento.
+    run = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if check and run.returncode != 0:
         raise SystemExit(run.stderr.strip() or f"git {' '.join(args)} falhou")
     return run
@@ -87,7 +88,8 @@ def base_sha():
 
 
 def name_status(base, head="HEAD"):
-    diff = git("diff", "--name-status", "-M", base, head, check=False)
+    # head=None compara a base com a working tree.
+    diff = git("diff", "--name-status", "-M", base, *([head] if head else []), check=False)
     rows = []
     for line in diff.stdout.splitlines():
         parts = line.split("\t")
@@ -153,33 +155,45 @@ def norm(path, repo):
 
 
 def parse_lcov(text, repo):
-    cov, cur = {}, None
+    """{arquivo: {linha: hits}} e {arquivo: {linha: branches não tomadas}}."""
+    cov, br, cur = {}, {}, None
     for line in text.splitlines():
         if line.startswith("SF:"):
             cur = norm(line[3:], repo)
             cov.setdefault(cur, {})
+            br.setdefault(cur, {})
         elif line.startswith("DA:") and cur:
             num, hits = line[3:].split(",")[:2]
             cov[cur][int(num)] = int(float(hits))
+        elif line.startswith("BRDA:") and cur:
+            bits = line[5:].split(",")
+            if len(bits) == 4 and bits[3] in {"-", "0"}:
+                num = int(bits[0])
+                br[cur][num] = br[cur].get(num, 0) + 1
         elif line == "end_of_record":
             cur = None
-    return cov
+    return cov, br
 
 
 def parse_cobertura(text, repo):
-    cov = {}
+    cov, br = {}, {}
     try:
         tree = ET.fromstring(text)
     except ET.ParseError:
-        return cov
+        return cov, br
     for node in tree.iter():
         if not node.tag.endswith("class"):
             continue
         filename = norm(node.get("filename") or "", repo)
         for line in node.iter():
             if line.tag.endswith("line") and line.get("number"):
-                cov.setdefault(filename, {})[int(line.get("number"))] = int(float(line.get("hits") or 0))
-    return cov
+                num = int(line.get("number"))
+                cov.setdefault(filename, {})[num] = int(float(line.get("hits") or 0))
+                # condition-coverage="50% (1/2)"
+                cond = re.search(r"\((\d+)/(\d+)\)", line.get("condition-coverage") or "")
+                if line.get("branch") == "true" and cond and int(cond.group(1)) < int(cond.group(2)):
+                    br.setdefault(filename, {})[num] = int(cond.group(2)) - int(cond.group(1))
+    return cov, br
 
 
 COVERAGE_FILES = [
@@ -225,7 +239,7 @@ def coverage_layer(repo, base, started, warnings):
         warnings.append("diff-cover: sem lcov/cobertura fresco, skip")
         return "skip"
     text = artifact.read_text(errors="replace")
-    cov = parse_cobertura(text, repo) if artifact.suffix == ".xml" else parse_lcov(text, repo)
+    cov, br = parse_cobertura(text, repo) if artifact.suffix == ".xml" else parse_lcov(text, repo)
     red = False
     for status, paths in name_status(base):
         path = paths[-1]
@@ -237,6 +251,9 @@ def coverage_layer(repo, base, started, warnings):
         for num in added_lines(base, path):
             if num in cov[path] and cov[path][num] == 0:
                 warnings.append(f"diff-cover: {path}:{num} hits 0")
+                red = True
+            elif br.get(path, {}).get(num):
+                warnings.append(f"diff-cover: {path}:{num} {br[path][num]} branch(es) não exercitada(s)")
                 red = True
     return "red" if red else "green"
 
@@ -283,7 +300,7 @@ def lizard_map(path):
     return found
 
 
-def cc_layer(repo, base, warnings):
+def cc_layer(repo, base, warnings, rows=None):
     if not shutil.which("lizard"):
         warnings.append("cc: lizard ausente, skip")
         return "skip"
@@ -291,7 +308,7 @@ def cc_layer(repo, base, warnings):
         warnings.append("cc: sem base, skip")
         return "skip"
     red = False
-    for status, paths in name_status(base):
+    for status, paths in (name_status(base) if rows is None else rows):
         path = paths[-1]
         if status.startswith("D") or not is_source(path):
             continue
@@ -317,6 +334,68 @@ def cc_layer(repo, base, warnings):
                 warnings.append(f"cc: {path} {name} cruzou {CC_LIMIT} ({old} → {ccn})")
                 red = True
     return "red" if red else "green"
+
+
+MOCK_JS = re.compile(r"""\b(?:vi|jest)\.(?:mock|doMock)\(\s*['"]([^'"]+)['"]""")
+MOCK_PY = re.compile(r"""\bpatch\(\s*['"]([^'"]+)['"]""")
+DB_MODULE = re.compile(r"(^|[/.])(db|prisma|database|drizzle)([/.]index)?$")
+# Banco real injetado pelo mock (padrão do erp-2f: libsql :memory: + migrate) não é mock de banco.
+REAL_DB = re.compile(r"migrate\(|:memory:|PGlite|testcontainers")
+
+
+def internal_target(target, repo):
+    if target.startswith((".", "@/", "#/", "~/")):
+        return True
+    # Python: o primeiro pacote do alvo existe no repo.
+    top = target.split(".")[0]
+    return "/" not in target and ((repo / top).is_dir() or (repo / "src" / top).is_dir())
+
+
+def mocks_layer(repo, base, warnings):
+    """Só linhas adicionadas: mock antigo em teste editado não acusa."""
+    if not base:
+        warnings.append("mocks: sem base, skip")
+        return "skip"
+    red = False
+    for status, paths in name_status(base):
+        path = paths[-1]
+        if status.startswith("D") or not is_test(path) or Path(path).suffix not in SOURCE_EXT:
+            continue
+        text = blob("HEAD", path) or ""
+        lines = text.splitlines()
+        stem = os.path.basename(path).split(".")[0]
+        for num in added_lines(base, path):
+            line = lines[num - 1] if 0 < num <= len(lines) else ""
+            for found in (*MOCK_JS.findall(line), *MOCK_PY.findall(line)):
+                if not internal_target(found, repo):
+                    continue
+                last = re.split(r"[/.]", found.rstrip("/"))[-1]
+                if DB_MODULE.search(found):
+                    if not REAL_DB.search(text):
+                        warnings.append(f"mocks: {path}:{num} mocka o banco ({found}); use banco real em memória")
+                        red = True
+                elif last == stem:
+                    warnings.append(f"mocks: {path}:{num} mocka o próprio módulo testado ({found})")
+                    red = True
+                else:
+                    warnings.append(f"mocks: {path}:{num} mocka código próprio ({found}); mock só na fronteira")
+    return "red" if red else "green"
+
+
+def cmd_cc():
+    """CC das funções do diff contra a working tree, antes de escrever os testes."""
+    repo = root()
+    os.chdir(repo)
+    base = base_sha() or git("rev-parse", "HEAD").stdout.strip()
+    rows = name_status(base, None)
+    untracked = git("ls-files", "--others", "--exclude-standard").stdout.splitlines()
+    rows += [("A", [path]) for path in untracked]
+    warnings = []
+    status = cc_layer(repo, base, warnings, rows)
+    for line in warnings:
+        print(f"[doctor-deploy] {line}", file=sys.stderr)
+    print(f"[doctor-deploy] cc: {status}", file=sys.stderr)
+    return 1 if status == "red" else 0
 
 
 def deps_layer(base, warnings):
@@ -407,6 +486,7 @@ def cmd_layers(started):
         "diff_cover": coverage_layer(repo, base, started, warnings),
         "size": size_layer(base, warnings),
         "cc": cc_layer(repo, base, warnings),
+        "mocks": mocks_layer(repo, base, warnings),
         "deps": deps_layer(base, warnings),
         "audit": audit_layer(base, warnings),
         "mutation": mutation_layer(warnings),
@@ -512,7 +592,7 @@ def cmd_consent(tool, answer):
 def main():
     argv = sys.argv[1:]
     if not argv:
-        raise SystemExit("uso: layers | write-receipt | check | print-skipped | needs-consent | consent")
+        raise SystemExit("uso: layers | cc | write-receipt | check | print-skipped | needs-consent | consent")
     cmd = argv[0]
     if cmd == "layers":
         started = 0
@@ -529,6 +609,8 @@ def main():
     if cmd == "print-skipped":
         cmd_print()
         return
+    if cmd == "cc":
+        raise SystemExit(cmd_cc())
     if cmd == "preflight":
         cmd_preflight()
         return
