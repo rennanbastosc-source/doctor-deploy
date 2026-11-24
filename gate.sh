@@ -24,40 +24,51 @@ tree_clean() {
 
 # Imprime o comando do entrypoint de quality da raiz, ou nada. Não roda.
 quality_entry() {
-  if [ -f package.json ] && command -v "$PYTHON" >/dev/null 2>&1; then
-    q=$("$PYTHON" -c'
+  root=$(git rev-parse --show-toplevel)
+  (
+    cd "$root"
+    if [ -f .doctor-deploy.json ] && command -v "$PYTHON" >/dev/null 2>&1; then
+      q=$("$PYTHON" "$PY" config-quality)
+      if [ -n "$q" ]; then
+        echo "$q"
+        return
+      fi
+    fi
+    if [ -f package.json ] && command -v "$PYTHON" >/dev/null 2>&1; then
+      q=$("$PYTHON" -c'
 import json, sys
 try:
     print(json.load(open("package.json", encoding="utf-8")).get("scripts", {}).get("quality", ""))
 except (OSError, ValueError, AttributeError) as exc:
     sys.exit(f"[doctor-deploy] package.json ilegível: {exc}")
 ')
-    if [ -n "$q" ]; then
-      pm=npm
-      if [ -f pnpm-lock.yaml ]; then pm=pnpm; fi
-      if [ -f yarn.lock ]; then pm=yarn; fi
-      if [ -f bun.lock ] || [ -f bun.lockb ]; then pm=bun; fi
-      echo "$pm run quality"
-      return
+      if [ -n "$q" ]; then
+        pm=npm
+        if [ -f pnpm-lock.yaml ]; then pm=pnpm; fi
+        if [ -f yarn.lock ]; then pm=yarn; fi
+        if [ -f bun.lock ] || [ -f bun.lockb ]; then pm=bun; fi
+        echo "$pm run quality"
+        return
+      fi
     fi
-  fi
-  has_make=0
-  if [ -f Makefile ] && grep -q '^quality:' Makefile; then
-    if command -v make >/dev/null 2>&1; then
+    has_make=0
+    if [ -f Makefile ] && grep -q '^quality:' Makefile; then
+      if command -v make >/dev/null 2>&1; then
+        echo "make quality"
+        return
+      fi
+      has_make=1
+    fi
+    # Agnóstico: Go, Rails e o que mais vier sem make (Windows) usam um script POSIX.
+    if [ -f scripts/quality.sh ]; then
+      echo "sh scripts/quality.sh"
+    elif [ -f scripts/quality.py ]; then
+      echo "$PYTHON scripts/quality.py"
+    elif [ "$has_make" = 1 ]; then
+      # Sem make instalado: falha alto (127) em vez de virar "sem entrypoint".
       echo "make quality"
-      return
     fi
-    has_make=1
-  fi
-  # Agnóstico: Go, Rails e o que mais vier sem make (Windows) usam um script POSIX.
-  if [ -f scripts/quality.sh ]; then
-    echo "sh scripts/quality.sh"
-  elif [ -f scripts/quality.py ]; then
-    echo "$PYTHON scripts/quality.py"
-  elif [ "$has_make" = 1 ]; then
-    # Sem make instalado: falha alto (127) em vez de virar "sem entrypoint".
-    echo "make quality"
-  fi
+  )
 }
 
 # Shim do pre-push. Acha a skill na hora do push: o plugin do Claude Code muda de pasta a cada versão.

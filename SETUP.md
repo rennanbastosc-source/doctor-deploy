@@ -118,11 +118,36 @@ Ponha `.mutant/` no `.gitignore`: o mutant grava resultados lá, e a árvore suj
 
 **`core.hooksPath`** (husky, lefthook, pre-commit e afins): o git lê os hooks dessa pasta, não de `.git/hooks`. O `install-hook` e o `preflight` seguem o `core.hooksPath`, mas não sobrescrevem o hook que o gerenciador já criou. Nesse caso, ponha a delegação no hook que o gerenciador executa, por exemplo uma linha em `.husky/pre-push` (husky 9) que chame `scripts/pre-push.sh` ou `${DOCTOR_DEPLOY_HOOK}`, repassando o stdin. O `preflight` avisa enquanto o pre-push não citar a skill.
 
-## 6. AGENTS.md
+## 6. `.doctor-deploy.json` (opcional)
+
+Por padrão o portão é zero-config. Se o repositório fugir das convenções (branch principal diferente de `main`/`master`, paths de cobertura customizados, pasta de banco/integração fora do padrão, ou necessidade de ajustar tetos), crie `.doctor-deploy.json` na raiz:
+
+```json
+{
+  "baseBranch": "develop",
+  "protectedBranches": ["main", "develop"],
+  "quality": "just quality",
+  "limits": { "size": 500, "cc": 20 },
+  "coverageFiles": ["reports/lcov.info"],
+  "ignorePaths": ["src/legacy/**"],
+  "dbModules": ["(^|[/.])datasource$"],
+  "realDbPatterns": ["createTestContainer\\("],
+  "integration": {
+    "dataDirs": ["usecases"],
+    "uiDirs": ["widgets"],
+    "ignore": ["src/components/icons/**"]
+  },
+  "disableLayers": ["mutation"]
+}
+```
+
+Todo campo é opcional; `disableLayers` registra a camada como `skip` explícito no recibo.
+
+## 7. AGENTS.md
 
 Uma seção curta: o que o `quality` roda e por quê nessa ordem, o piso que só sobe, a política de mock da seção 4, e que quem executa o portão é a skill (não rode o `quality` à mão antes do push).
 
-## 7. Fechar
+## 8. Fechar
 
 1. Rode o `quality` uma vez e grave o piso medido.
 2. `gate.sh preflight` verde, e `git status` limpo depois do `quality` (fora o próprio setup).
