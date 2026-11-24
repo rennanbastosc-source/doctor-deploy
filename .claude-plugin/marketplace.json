@@ -1,0 +1,15 @@
+{
+  "name": "doctor-deploy",
+  "description": "Doctor Deploy: local push/merge gate with a receipt.",
+  "owner": { "name": "rennanbastosc-source", "url": "https://github.com/rennanbastosc-source" },
+  "plugins": [
+    {
+      "name": "doctor-deploy",
+      "source": "./",
+      "description": "Local push/merge gate with a receipt, language-agnostic.",
+      "version": "0.0.1",
+      "category": "development",
+      "tags": ["git", "quality-gate", "testing"]
+    }
+  ]
+}

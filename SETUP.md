@@ -66,7 +66,7 @@ A skill cobra isso em três camadas: `mocks` (linhas adicionadas em teste que mo
 
 ## 5. Hook
 
-`scripts/pre-push.sh` versionado no repo, que faz os passos próprios do projeto (lembrete de E2E no frota, sync de migrations no erp-2f), exporta `PUSH_GATE_BRANCHES=<branch principal>` e delega para `${DOCTOR_DEPLOY_HOOK:-$HOME/.agents/skills/doctor-deploy/pre-push.sh}`. Sem a skill, bloqueia só o push para a branch principal. Depois, `gate.sh install-hook` grava o shim que executa esse script.
+`scripts/pre-push.sh` versionado no repo, que faz os passos próprios do projeto (lembrete de E2E no frota, sync de migrations no erp-2f), exporta `PUSH_GATE_BRANCHES=<branch principal>` e delega para `${DOCTOR_DEPLOY_HOOK:-$HOME/.agents/skills/doctor-deploy/pre-push.sh}` (instalado como plugin do Claude Code, exporte `DOCTOR_DEPLOY_HOOK` ou use o shim do `install-hook`, que acha o plugin mais novo sozinho). Sem a skill, bloqueia só o push para a branch principal. Depois, `gate.sh install-hook` grava o shim que executa esse script.
 
 ## 6. AGENTS.md
 

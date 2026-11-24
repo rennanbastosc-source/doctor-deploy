@@ -22,8 +22,23 @@ git config user.name t
 export CI=1
 "$GATE" install-hook 2>/dev/null
 HOOK=$TMP/.git/hooks/pre-push
-grep -qF "$SKILL/pre-push.sh" "$HOOK"
+grep -qF "\"$SKILL\"" "$HOOK"
 "$GATE" preflight 2>&1 | grep -q "ok: hook pre-push é o shim"
+# Shim com a skill fora do lugar de instalação: acha o plugin mais novo; sem skill, bloqueia só a main.
+FHOME=$WORK/fakehome
+for v in 0.0.1 0.0.2; do
+  mkdir -p "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v"
+  printf '#!/bin/sh\necho via-plugin-%s >&2\n' "$v" > "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v/pre-push.sh"
+  chmod +x "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v/pre-push.sh"
+  touch -t "20260101000$v" "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v/pre-push.sh" 2>/dev/null || sleep 1
+done
+sed "s#$SKILL#$WORK/sumiu#" "$HOOK" > "$WORK/shim" && chmod +x "$WORK/shim"
+: | HOME="$FHOME" "$WORK/shim" 2>&1 | grep -q via-plugin-0.0.2 || { echo "shim não achou o plugin mais novo" >&2; exit 1; }
+rm -r "$FHOME/.claude"
+if printf 'refs/heads/main %s refs/heads/main %s\n' "$ZERO" "$ZERO" | HOME="$FHOME" "$WORK/shim" 2>/dev/null; then
+  echo "shim sem skill deixou passar push para a main" >&2; exit 1
+fi
+printf 'refs/heads/feat %s refs/heads/feat %s\n' "$ZERO" "$ZERO" | HOME="$FHOME" "$WORK/shim" 2>/dev/null
 
 mkdir -p src
 export DD_STAMP="$WORK/stamp"

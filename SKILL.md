@@ -11,7 +11,7 @@ description: >-
 
 # Doctor Deploy
 
-Canônico em `~/.agents/skills/doctor-deploy`. Todo `gate.sh` deste texto e do [SETUP.md](SETUP.md) é `"$HOME/.agents/skills/doctor-deploy/gate.sh"`, rodado de dentro do repo do projeto; no Windows, pelo sh do Git: `"/c/Program Files/Git/bin/sh.exe" "$HOME/.agents/skills/doctor-deploy/gate.sh" prepare`. Os scripts são POSIX, LF (no Windows rodam no sh do Git for Windows, o mesmo dos hooks) e chamam `python3`, ou `python` quando `python3` não roda (atalho da Microsoft Store), em modo UTF-8. Não copie esta skill para o repo. Não instale ferramenta com `pip install --user` (PEP 668 no Ubuntu).
+Todo `gate.sh` deste texto e do [SETUP.md](SETUP.md) é o `gate.sh` da pasta deste SKILL.md: `"$HOME/.agents/skills/doctor-deploy/gate.sh"` no clone, `"${CLAUDE_PLUGIN_ROOT}/gate.sh"` no plugin do Claude Code. Rode de dentro do repo do projeto; no Windows, pelo sh do Git: `"/c/Program Files/Git/bin/sh.exe" "<pasta da skill>/gate.sh" prepare`. Os scripts são POSIX, LF (no Windows rodam no sh do Git for Windows, o mesmo dos hooks) e chamam `python3`, ou `python` quando `python3` não roda (atalho da Microsoft Store), em modo UTF-8. Não copie esta skill para o repo. Não instale ferramenta com `pip install --user` (PEP 668 no Ubuntu).
 
 O portão existe para não subir vermelho. Repetir um verde já gravado é o bug, não rigor. Um recibo válido é o verde.
 

@@ -54,6 +54,33 @@ quality_entry() {
   fi
 }
 
+# Shim do pre-push. Acha a skill na hora do push: o plugin do Claude Code muda de pasta a cada versão.
+# Ordem: $DOCTOR_DEPLOY_HOME, a pasta de quando o hook foi instalado, o clone em ~/.agents/skills,
+# o plugin mais novo em ~/.claude/plugins/cache. Sem skill: bloqueia só a branch protegida.
+write_shim() {
+  cat > "$1" <<EOF
+#!/bin/sh
+# doctor-deploy: shim
+for d in "\${DOCTOR_DEPLOY_HOME:-}" "$SKILL_DIR" "\$HOME/.agents/skills/doctor-deploy"; do
+  [ -n "\$d" ] && [ -f "\$d/pre-push.sh" ] && exec "\$d/pre-push.sh"
+done
+best=
+for d in "\$HOME"/.claude/plugins/cache/*/doctor-deploy/*; do
+  [ -f "\$d/pre-push.sh" ] || continue
+  if [ -z "\$best" ] || [ "\$d/pre-push.sh" -nt "\$best/pre-push.sh" ]; then best=\$d; fi
+done
+[ -n "\$best" ] && exec "\$best/pre-push.sh"
+branches=",\${PUSH_GATE_BRANCHES:-main,master},"
+while read -r _l _ls remote _rs; do
+  case "\$branches" in *",\${remote#refs/heads/},"*)
+    echo "[doctor-deploy] skill não encontrada (DOCTOR_DEPLOY_HOME, ~/.agents/skills/doctor-deploy ou plugin); push para \$remote bloqueado" >&2
+    exit 1 ;;
+  esac
+done
+exit 0
+EOF
+}
+
 # O projeto tem hook próprio (scripts/pre-push.sh) que delega à skill, como frota-impacto e erp-2f.
 # Rodar na raiz do repo.
 project_hook_delegates() {
@@ -129,7 +156,7 @@ case "$cmd" in
       else
         echo "[doctor-deploy] aviso: o hook pre-push pula o scripts/pre-push.sh do projeto (apague $hook e rode gate.sh install-hook)" >&2
       fi
-    elif grep -qF "$SKILL_DIR/pre-push.sh" "$hook"; then
+    elif grep -q "doctor-deploy: shim" "$hook" || grep -qF "$SKILL_DIR/pre-push.sh" "$hook"; then
       echo "[doctor-deploy] ok: hook pre-push é o shim da skill" >&2
     else
       echo "[doctor-deploy] aviso: o pre-push é do projeto e não delega à skill; ele não consulta o recibo" >&2
@@ -150,7 +177,7 @@ case "$cmd" in
       # Hook do projeto primeiro: ele faz os passos próprios e delega à skill. Raiz resolvida por worktree.
       printf '#!/bin/sh\nexec "$(git rev-parse --show-toplevel)/scripts/pre-push.sh"\n' > "$hook"
     else
-      printf '#!/bin/sh\nexec "%s"\n' "$SKILL_DIR/pre-push.sh" > "$hook"
+      write_shim "$hook"
     fi
     chmod +x "$hook"
     echo "[doctor-deploy] hook instalado: $hook" >&2

@@ -1,0 +1,10 @@
+{
+  "name": "doctor-deploy",
+  "version": "0.0.1",
+  "description": "Local push/merge gate with a receipt: runs the project's quality once, records the green, and checks the diff for coverage, complexity, mocks, real-DB integration tests, mutation and audit. Language-agnostic (JS/TS, Python, Go, Rails).",
+  "author": { "name": "rennanbastosc-source", "url": "https://github.com/rennanbastosc-source" },
+  "homepage": "https://github.com/rennanbastosc-source/doctor-deploy",
+  "repository": "https://github.com/rennanbastosc-source/doctor-deploy",
+  "license": "MIT",
+  "keywords": ["git", "pre-push", "quality-gate", "coverage", "mutation-testing", "integration-tests", "ci"]
+}
