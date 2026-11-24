@@ -37,6 +37,11 @@ done
 sed "s#$SKILL#$WORK/sumiu#" "$HOOK" > "$WORK/shim" && chmod +x "$WORK/shim"
 : | HOME="$FHOME" "$WORK/shim" 2>&1 | grep -q via-plugin-0.0.2 || { echo "shim não achou o plugin mais novo" >&2; exit 1; }
 rm -r "$FHOME/.claude"
+mkdir -p "$FHOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy"
+printf '#!/bin/sh\necho via-antigravity >&2\n' > "$FHOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy/pre-push.sh"
+chmod +x "$FHOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy/pre-push.sh"
+: | HOME="$FHOME" "$WORK/shim" 2>&1 | grep -q via-antigravity || { echo "shim não achou o plugin do Antigravity" >&2; exit 1; }
+rm -r "$FHOME/.gemini"
 if printf 'refs/heads/main %s refs/heads/main %s\n' "$ZERO" "$ZERO" | HOME="$FHOME" "$WORK/shim" 2>/dev/null; then
   echo "shim sem skill deixou passar push para a main" >&2; exit 1
 fi
@@ -156,6 +161,8 @@ assert layers.norm("/r/.config/a.ts", Path("/r")) == ".config/a.ts"' "$SKILL"
 s = lambda out: layers.audit_status(P([], 1, out, ""))
 assert s("3 high severity vulnerabilities") == "red", s("3 high severity vulnerabilities")
 assert s("found 2 vulnerabilities (1 moderate, 1 high)") == "red"
+assert s("Found 1 known vulnerability in 1 package") == "red"
+assert s("1 vulnerability") == "red"
 assert s("Usage Error: Couldnt find a script named audit") == "error"
 assert s("npm ERR! code ENOLOCK") == "error"
 assert layers.audit_status(P([], 0, "", "")) == "green"' "$SKILL"
@@ -501,5 +508,26 @@ if printf '%s %s %s %s\n%s %s %s %s\n' \
   echo "quality que lê stdin engoliu o segundo ref do push" >&2
   exit 1
 fi
+
+# added_lines_map em lote (inclusive arquivo com espaço) e audit de uv.lock via pip-audit falso
+newrepo batchrepo
+mkdir -p src
+printf '%s\n' '{"name":"ação","scripts":{"quality":"true"}}' > package.json
+printf '%s\n' 'export const a = 1' > "src/arquivo com espaco.ts"
+printf '%s\n' 'export const b = 1' > src/b.ts
+git add -A && git commit -qm base && git update-ref refs/remotes/origin/main HEAD
+printf '%s\n' 'export const a = 1' 'export const a2 = 2' > "src/arquivo com espaco.ts"
+printf '%s\n' 'export const b = 1' 'export const b2 = 2' > src/b.ts
+printf '%s\n' 'version = 1' > uv.lock
+git add -A && git commit -qm altera
+"$PYTHON" -c 'import sys; sys.path.insert(0, sys.argv[1]); import layers
+m = layers.added_lines_map(layers.base_sha())
+assert m["src/arquivo com espaco.ts"] == [2], m
+assert m["src/b.ts"] == [2], m' "$SKILL"
+cat > "$FAKE/pip-audit.js" <<'JS'
+console.error("Found 1 known vulnerability in 1 package"); process.exit(1);
+JS
+fake_bin pip-audit
+PATH="$FAKE:$PATH" layer audit red "pip-audit com uv.lock não ficou vermelho"
 
 echo "self-check ok"

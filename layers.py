@@ -30,10 +30,13 @@ AUDIT = {
     "go.sum": ["govulncheck", "./..."],
     "Gemfile.lock": ["bundle-audit", "check", "--update"],
     "Cargo.lock": ["cargo-audit", "audit"],
+    "uv.lock": ["pip-audit"],
+    "poetry.lock": ["pip-audit"],
+    "Pipfile.lock": ["pip-audit"],
 }
 def git(*args, check=True):
     # UTF-8 explícito: sem PYTHONUTF8 o Windows decodifica em cp1252 e quebra em acento.
-    run = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    run = subprocess.run(["git", "-c", "core.quotepath=false", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if check and run.returncode != 0:
         raise SystemExit(run.stderr.strip() or f"git {' '.join(args)} falhou")
     return run
@@ -63,7 +66,7 @@ def quality_skip_allowed():
 
 def load_json(path):
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -268,7 +271,7 @@ COVERAGE_FILES = [
 
 
 def parse_coverage(artifact, repo):
-    text = artifact.read_text(errors="replace")
+    text = artifact.read_text(encoding="utf-8", errors="replace")
     if artifact.suffix == ".xml":
         return parse_cobertura(text, repo)
     if artifact.suffix == ".json":
@@ -289,21 +292,34 @@ def fresh_coverage(repo, started):
     return max(found, key=lambda item: item.stat().st_mtime)
 
 
-def added_lines(base, path):
-    diff = git("diff", "-U0", base, "HEAD", "--", path, check=False)
-    nums, current = [], None
+def added_lines_map(base, head="HEAD"):
+    """{caminho: [linhas adicionadas]} via um único git diff -U0."""
+    diff = git("diff", "-U0", "-M", base, head, check=False)
+    out, path, current = {}, None, None
     for line in diff.stdout.splitlines():
-        if line.startswith("@@"):
+        if line.startswith("diff --git "):
+            path, current = None, None
+        elif line.startswith("+++ "):
+            target = line[4:].rstrip("\t")
+            path = target[2:] if target.startswith("b/") else None
+            current = None
+        elif line.startswith("--- ") or line.startswith("index "):
+            continue
+        elif line.startswith("@@ ") and path is not None:
             plus = line.split(" ")[2][1:]
             current = int(plus.split(",")[0])
-        elif line.startswith("+") and not line.startswith("+++") and current is not None:
-            nums.append(current)
+        elif line.startswith("+") and not line.startswith("+++") and path is not None and current is not None:
+            out.setdefault(path, []).append(current)
             current += 1
         elif line.startswith("\\"):
             continue
-        elif current is not None and not line.startswith("-"):
+        elif path is not None and current is not None and not line.startswith("-"):
             current += 1
-    return nums
+    return out
+
+
+def added_lines(base, path):
+    return added_lines_map(base).get(path, [])
 
 
 def coverage_layer(repo, base, started, warnings):
@@ -315,6 +331,7 @@ def coverage_layer(repo, base, started, warnings):
         warnings.append("diff-cover: sem lcov/cobertura fresco, skip")
         return "skip"
     cov, br = parse_coverage(artifact, repo)
+    added = added_lines_map(base)
     red = False
     for status, paths in name_status(base):
         path = paths[-1]
@@ -323,7 +340,7 @@ def coverage_layer(repo, base, started, warnings):
         if path not in cov:
             warnings.append(f"diff-cover: {path} fora do relatório")
             continue
-        for num in added_lines(base, path):
+        for num in added.get(path, ()):
             if num in cov[path] and cov[path][num] == 0:
                 warnings.append(f"diff-cover: {path}:{num} hits 0")
                 red = True
@@ -359,7 +376,7 @@ def lizard_map(path):
     if not shutil.which("lizard"):
         return None
     try:
-        run = subprocess.run(["lizard", path], capture_output=True, text=True, timeout=60)
+        run = subprocess.run(["lizard", path], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     except subprocess.TimeoutExpired:
         return None
     found = {}
@@ -466,13 +483,14 @@ def mocks_layer(repo, base, warnings):
         return "skip"
     red = False
     graph = ImportGraph(repo)
+    added = added_lines_map(base)
     for status, paths in name_status(base):
         path = paths[-1]
         if status.startswith("D") or not is_test(path) or Path(path).suffix not in SOURCE_EXT:
             continue
         text = blob("HEAD", path) or ""
         lines = text.splitlines()
-        for num in added_lines(base, path):
+        for num in added.get(path, ()):
             line = lines[num - 1] if 0 < num <= len(lines) else ""
             for is_red, msg in line_mock_findings(line, path, text, repo, graph):
                 red = red or is_red
@@ -834,7 +852,7 @@ def audit_layer(base, warnings):
         # No Windows `npm` é um .cmd: `which` resolve, mas CreateProcess com o nome
         # nu falha (WinError 2). Executa o caminho resolvido.
         try:
-            run = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=AUDIT_TIMEOUT)
+            run = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=AUDIT_TIMEOUT)
         except subprocess.TimeoutExpired:
             warnings.append(f"audit: {cmd[0]} timeout {AUDIT_TIMEOUT}s, skip")
             continue
@@ -886,14 +904,15 @@ MUTANT_EVIL = re.compile(r"^evil:(\S+?):((?:/|[A-Za-z]:[\\/])[^\n]+?\.rb):(\d+):
 
 def diff_added(base, exts):
     """{fonte do diff com essas extensões: linhas adicionadas}."""
-    added = {p: set(added_lines(base, p)) for p in changed_paths(name_status(base)) if is_source(p) and Path(p).suffix in exts}
+    all_added = added_lines_map(base)
+    added = {p: set(all_added.get(p, ())) for p in changed_paths(name_status(base)) if is_source(p) and Path(p).suffix in exts}
     return {p: lines for p, lines in added.items() if lines}
 
 
 def run_mutator(cmd, name, warnings):
     """CompletedProcess, ou None (com aviso) se estourou o tempo."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=MUTATION_TIMEOUT)
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=MUTATION_TIMEOUT)
     except subprocess.TimeoutExpired:
         warnings.append(f"mutação: {name} timeout {MUTATION_TIMEOUT}s, skip")
         return None
@@ -961,7 +980,7 @@ def gremlins_live(mutants, added):
 
 def mutant_configured():
     lock = Path("Gemfile.lock")
-    return lock.exists() and "mutant" in lock.read_text(errors="replace") and any(Path(p).exists() for p in (".mutant.yml", "config/mutant.yml"))
+    return lock.exists() and "mutant" in lock.read_text(encoding="utf-8", errors="replace") and any(Path(p).exists() for p in (".mutant.yml", "config/mutant.yml"))
 
 
 def mutant_evil(out, repo):
@@ -1068,7 +1087,7 @@ def cmd_write(quality_skipped, layers_raw):
     }
     path = receipt_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"[doctor-deploy] recibo {path}", file=sys.stderr)
 
 
@@ -1141,7 +1160,7 @@ def cmd_consent(tool, answer):
     path.parent.mkdir(parents=True, exist_ok=True)
     data = load_json(path) or {}
     data[tool] = answer
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     print(f"[doctor-deploy] consent {tool}={answer}", file=sys.stderr)
 
 
