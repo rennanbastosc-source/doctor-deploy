@@ -460,7 +460,7 @@ case "$(uname -s)" in
        | grep -q "cobrar.rb:3 Pagamentos::Cobrar#call" || { echo "aviso do mutant sem o subject completo" >&2; exit 1; } ;;
 esac
 
-# hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
+# hook de projeto que delega (scripts/pre-push.sh)
 mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"
 git init -b main >/dev/null
 git config user.email t@example.com

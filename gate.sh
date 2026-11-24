@@ -87,7 +87,7 @@ exit 0
 EOF
 }
 
-# O projeto tem hook próprio (scripts/pre-push.sh) que delega à skill, como frota-impacto e erp-2f.
+# O projeto tem hook próprio (scripts/pre-push.sh) que delega à skill.
 # Rodar na raiz do repo.
 project_hook_delegates() {
   [ -f scripts/pre-push.sh ] && grep -q 'doctor-deploy/pre-push.sh' scripts/pre-push.sh

@@ -42,7 +42,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 `gate.sh check <sha-que-vai-subir>`
 
-Válido se o recibo está verde, a versão bate e o conteúdo do SHA é o testado, salvo `*.md`. Ancestralidade não conta: merge, squash e rebase do commit testado passam; se a base andou, o código alheio aparece no delta e invalida. A mensagem do commit não conta: `docs:` com `.ts` ou `.json` invalida. O risco aceito é um `.md` que a suíte lê (no frota, `docs/invariantes` vs `mapa-invariantes.test.ts`) passar sem rerodar.
+Válido se o recibo está verde, a versão bate e o conteúdo do SHA é o testado, salvo `*.md`. Ancestralidade não conta: merge, squash e rebase do commit testado passam; se a base andou, o código alheio aparece no delta e invalida. A mensagem do commit não conta: `docs:` com `.ts` ou `.json` invalida. O risco aceito é um `.md` que a suíte lê (um teste que confere a documentação) passar sem rerodar.
 
 Se o check sair 0, faça o push ou o merge. Não chame quality. O hook faz a mesma leitura e sai 0.
 
@@ -77,6 +77,6 @@ Vermelho: no máximo 3 rodadas. Conserte a causa, rode `prepare` de novo. Reparo
 
 Merge pela UI do GitHub e `gh pr merge` não passam pelo hook. O recibo cobre o agente e o `git push`. Convenção de PR, spec, schema em produção e prova de deploy ficam no `AGENTS.md` do projeto. Se esse arquivo for mais rígido, ele ganha.
 
-Se o `AGENTS.md` disser que o check de CI é o recibo da PR (frota-impacto), não rode `prepare` em PR: o portão seria pago duas vezes. O recibo vale para o push direto na branch principal.
+Se o `AGENTS.md` disser que o check de CI é o recibo da PR, não rode `prepare` em PR: o portão seria pago duas vezes. O recibo vale para o push direto na branch principal.
 
 Fora do setup ([SETUP.md](SETUP.md)), não edite o repo do projeto por conta da skill.

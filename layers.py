@@ -420,7 +420,7 @@ def cc_layer(repo, base, warnings, rows=None):
 MOCK_JS = re.compile(r"""\b(?:vi|jest)\.(?:mock|doMock)\(\s*['"]([^'"]+)['"]""")
 MOCK_PY = re.compile(r"""\bpatch\(\s*['"]([^'"]+)['"]""")
 DB_MODULE = re.compile(r"(^|[/.])(db|prisma|database|drizzle)([/.]index)?$")
-# Banco real injetado pelo mock (padrão do erp-2f: libsql :memory: + migrate) não é mock de banco.
+# Banco real injetado pelo mock (ex.: libsql :memory: + migrate) não é mock de banco.
 # Rails: rails_helper/TestCase sobem o banco de teste real. Go: txdb, pgtestdb, embedded-postgres.
 REAL_DB = re.compile(
     r"migrate\(|:memory:|pglite|testcontainers|rails_helper|ActiveSupport::TestCase|ActionDispatch::IntegrationTest"
