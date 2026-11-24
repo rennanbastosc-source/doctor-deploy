@@ -44,6 +44,12 @@ quality_entry() {
   fi
 }
 
+# O projeto tem hook próprio (scripts/pre-push.sh) que delega à skill, como frota-impacto e erp-2f.
+# Rodar na raiz do repo.
+project_hook_delegates() {
+  [ -f scripts/pre-push.sh ] && grep -q 'doctor-deploy/pre-push.sh' scripts/pre-push.sh
+}
+
 run_quality() {
   root=$(git rev-parse --show-toplevel)
   cd "$root"
@@ -94,15 +100,22 @@ case "$cmd" in
     hook=$(git rev-parse --git-common-dir)/hooks/pre-push
     if [ ! -e "$hook" ]; then
       echo "[doctor-deploy] aviso: sem hook pre-push (gate.sh install-hook)" >&2
-    elif ! grep -qF "$SKILL_DIR/pre-push.sh" "$hook"; then
-      echo "[doctor-deploy] aviso: o pre-push é do projeto, não o shim da skill; ele não consulta o recibo" >&2
-    else
+    elif project_hook_delegates; then
+      if grep -q 'scripts/pre-push.sh' "$hook"; then
+        echo "[doctor-deploy] ok: hook pre-push -> scripts/pre-push.sh -> skill" >&2
+      else
+        echo "[doctor-deploy] aviso: o hook pre-push pula o scripts/pre-push.sh do projeto (apague $hook e rode gate.sh install-hook)" >&2
+      fi
+    elif grep -qF "$SKILL_DIR/pre-push.sh" "$hook"; then
       echo "[doctor-deploy] ok: hook pre-push é o shim da skill" >&2
+    else
+      echo "[doctor-deploy] aviso: o pre-push é do projeto e não delega à skill; ele não consulta o recibo" >&2
     fi
     "$PYTHON" "$PY" preflight
     exit "$red"
     ;;
   install-hook)
+    cd "$(git rev-parse --show-toplevel)"
     common=$(git rev-parse --git-common-dir)
     hook=$common/hooks/pre-push
     if [ -e "$hook" ]; then
@@ -110,7 +123,12 @@ case "$cmd" in
       exit 0
     fi
     mkdir -p "$common/hooks"
-    printf '#!/bin/sh\nexec "%s"\n' "$SKILL_DIR/pre-push.sh" > "$hook"
+    if project_hook_delegates; then
+      # Hook do projeto primeiro: ele faz os passos próprios e delega à skill. Raiz resolvida por worktree.
+      printf '#!/bin/sh\nexec "$(git rev-parse --show-toplevel)/scripts/pre-push.sh"\n' > "$hook"
+    else
+      printf '#!/bin/sh\nexec "%s"\n' "$SKILL_DIR/pre-push.sh" > "$hook"
+    fi
     chmod +x "$hook"
     echo "[doctor-deploy] hook instalado: $hook" >&2
     ;;

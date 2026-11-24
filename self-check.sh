@@ -153,4 +153,23 @@ fi
 "$PYTHON" -c 'import json,sys; r=json.load(open(sys.argv[1])); assert "quality" in r["skipped"], r' \
   "$(git rev-parse --git-dir)/doctor-deploy/receipt.json"
 
+# hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
+mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"
+git init -b main >/dev/null
+git config user.email t@example.com
+git config user.name t
+mkdir -p scripts
+printf '#!/bin/sh\n# delega a doctor-deploy/pre-push.sh\necho via-projeto >&2\nexec "%s"\n' "$SKILL/pre-push.sh" > scripts/pre-push.sh
+chmod +x scripts/pre-push.sh
+git add scripts && git commit -m a >/dev/null
+HHOOK=$(pwd)/.git/hooks/pre-push
+mkdir -p .git/hooks
+printf '#!/bin/sh\nexec "%s"\n' "$SKILL/pre-push.sh" > "$HHOOK"
+"$GATE" preflight 2>&1 | grep -q "pula o scripts/pre-push.sh"
+rm "$HHOOK"
+"$GATE" install-hook 2>/dev/null
+grep -q 'scripts/pre-push.sh' "$HHOOK"
+"$GATE" preflight 2>&1 | grep -q "ok: hook pre-push -> scripts/pre-push.sh"
+: | "$HHOOK" 2>&1 | grep -q via-projeto
+
 echo "self-check ok"
