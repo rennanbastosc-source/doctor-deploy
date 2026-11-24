@@ -1296,6 +1296,226 @@ def cmd_consent(tool, answer):
     print(f"[doctor-deploy] consent {tool}={answer}", file=sys.stderr)
 
 
+def extract_ci_commands(path):
+    """Extrai comandos shell básicos de workflows/configs de CI sem depender de parser YAML."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    cmds, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        m_run = re.match(r"^(?:-\s*)?run:\s*(.*)$", stripped)
+        if m_run:
+            val = m_run.group(1).strip()
+            if val in {"|", "|-", "|+", ">", ">-", ">+"}:
+                i += 1
+                while i < len(lines):
+                    nxt = lines[i]
+                    if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= indent:
+                        break
+                    if nxt.strip() and not nxt.strip().startswith("#"):
+                        cmds.append(nxt.strip())
+                    i += 1
+                continue
+            elif val:
+                cmds.append(val.strip("'\""))
+        elif re.match(r"^(?:before_script|script|after_script):\s*$", stripped):
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= indent:
+                    break
+                m_item = re.match(r"^-\s+(.+)$", nxt.strip())
+                if m_item:
+                    cmds.append(m_item.group(1).strip("'\""))
+                i += 1
+            continue
+        elif path.name == "Jenkinsfile":
+            for m_sh in re.finditer(r"""\bsh\s+['"]([^'"]+)['"]""", stripped):
+                cmds.append(m_sh.group(1))
+        i += 1
+    return list(dict.fromkeys(cmds))
+
+
+def detect_ci(repo):
+    candidates = []
+    wf_dir = repo / ".github" / "workflows"
+    if wf_dir.is_dir():
+        candidates.extend(sorted(wf_dir.glob("*.yml")))
+        candidates.extend(sorted(wf_dir.glob("*.yaml")))
+    for rel in (".gitlab-ci.yml", ".circleci/config.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml", "Jenkinsfile"):
+        p = repo / rel
+        if p.is_file():
+            candidates.append(p)
+    out = []
+    for item in candidates:
+        out.append({
+            "path": item.relative_to(repo).as_posix(),
+            "commands": extract_ci_commands(item),
+        })
+    return out
+
+
+def detect_stacks(repo):
+    stacks = {}
+    pkg_path = repo / "package.json"
+    if pkg_path.is_file():
+        pkg = load_json(pkg_path) or {}
+        pm = "npm"
+        for lock, candidate in (("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun"), ("bun.lockb", "bun")):
+            if (repo / lock).is_file():
+                pm = candidate
+                break
+        scripts = pkg.get("scripts") if isinstance(pkg.get("scripts"), dict) else {}
+        deps = {}
+        for k in ("dependencies", "devDependencies"):
+            if isinstance(pkg.get(k), dict):
+                deps.update(pkg[k])
+        tools = [t for t in ("biome", "eslint", "prettier", "typescript", "vitest", "jest") if t in deps or any(t in str(v) for v in scripts.values())]
+        if (repo / "biome.json").is_file() and "biome" not in tools:
+            tools.append("biome")
+        if (repo / "tsconfig.json").is_file() and "typescript" not in tools:
+            tools.append("typescript")
+        stacks["js"] = {"packageManager": pm, "scripts": list(scripts.keys()), "tools": tools}
+    if any((repo / f).is_file() for f in ("pyproject.toml", "requirements.txt", "setup.py", "uv.lock", "poetry.lock", "Pipfile.lock")):
+        locks = [f for f in ("uv.lock", "poetry.lock", "Pipfile.lock") if (repo / f).is_file()]
+        stacks["python"] = {"locks": locks}
+    if (repo / "go.mod").is_file():
+        stacks["go"] = {"module": go_module(repo) or "", "hasSum": (repo / "go.sum").is_file()}
+    if (repo / "Gemfile").is_file():
+        stacks["ruby"] = {"hasLock": (repo / "Gemfile.lock").is_file(), "hasMutant": mutant_configured()}
+    if (repo / "Cargo.toml").is_file():
+        stacks["rust"] = {"hasLock": (repo / "Cargo.lock").is_file()}
+    return stacks
+
+
+def suggest_quality(repo, stacks):
+    if "js" in stacks:
+        js = stacks["js"]
+        pm = js["packageManager"]
+        run = f"{pm} --bun run" if pm == "bun" else f"{pm} run"
+        scripts = set(js["scripts"])
+        parts = []
+        for group in (("check", "lint", "format:check"), ("typecheck", "type-check"), ("build",), ("test:coverage", "test:cov", "coverage", "test")):
+            hit = next((name for name in group if name in scripts), None)
+            if hit:
+                parts.append(f"{run} {hit}")
+        if parts:
+            return " && ".join(parts)
+    if "go" in stacks:
+        return 'test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test -coverprofile=coverage.out ./...'
+    if "python" in stacks:
+        return "ruff check . && ruff format --check . && pytest --cov --cov-branch --cov-report=xml"
+    if "ruby" in stacks:
+        runner = "bundle exec rspec" if (repo / "spec").is_dir() else "bin/rails test"
+        return f"bundle exec rubocop && {runner}"
+    if "rust" in stacks:
+        return "cargo fmt --check && cargo clippy -- -D warnings && cargo test"
+    return ""
+
+
+def discover_report(repo, current_quality="", quality_error=""):
+    branch_run = git("symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    branch = branch_run.stdout.strip() if branch_run.returncode == 0 else "HEAD"
+    cfg_error = ""
+    try:
+        cfg = repo_config(repo)
+    except SystemExit as exc:
+        cfg = {}
+        cfg_error = str(exc)
+    base = base_sha(cfg)
+    hooks_path = git("config", "--get", "core.hooksPath", check=False).stdout.strip()
+    hook_dir = git("rev-parse", "--git-path", "hooks", check=False).stdout.strip()
+    hook_file = Path(hook_dir) / "pre-push" if hook_dir else Path(".git/hooks/pre-push")
+    if not hook_file.is_absolute():
+        hook_file = repo / hook_file
+    delegates = (repo / "scripts/pre-push.sh").is_file() and "doctor-deploy/pre-push.sh" in (repo / "scripts/pre-push.sh").read_text(encoding="utf-8", errors="replace")
+    managers = []
+    if (repo / ".husky").is_dir():
+        managers.append("husky")
+    if (repo / "lefthook.yml").is_file() or (repo / ".lefthook.yml").is_file():
+        managers.append("lefthook")
+    if (repo / ".pre-commit-config.yaml").is_file():
+        managers.append("pre-commit")
+    stacks = detect_stacks(repo)
+    ci = detect_ci(repo)
+    suggested = suggest_quality(repo, stacks)
+    cov_files = [name for name in coverage_candidates(cfg) if (repo / name).is_file()]
+    consent_pending = needs_consent()
+    gaps = []
+    if cfg_error:
+        gaps.append(cfg_error)
+    if quality_error:
+        gaps.append(quality_error)
+    elif not current_quality and not quality_skip_allowed():
+        gaps.append("sem entrypoint de quality")
+    if not hook_file.exists():
+        gaps.append("sem hook pre-push")
+    if not cov_files:
+        gaps.append("sem artefato de cobertura")
+    if not base:
+        gaps.append("sem base diferente do HEAD")
+    for tool in consent_pending:
+        gaps.append(f"{tool} sem consentimento")
+    try:
+        hook_rel = hook_file.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        hook_rel = hook_file.as_posix()
+    return {
+        "git": {
+            "root": repo.as_posix(),
+            "branch": branch,
+            "baseSha": base,
+            "coreHooksPath": hooks_path,
+            "hookPath": hook_rel,
+            "hasPrePushHook": hook_file.exists(),
+            "projectHookDelegates": delegates,
+            "hooksManagers": managers,
+        },
+        "config": {
+            "exists": (repo / CONFIG_FILE).is_file(),
+            "data": cfg,
+            **({"error": cfg_error} if cfg_error else {}),
+        },
+        "ci": ci,
+        "stacks": stacks,
+        "quality": {
+            "configured": bool(current_quality),
+            "entrypoint": current_quality,
+            "suggested": suggested,
+            **({"error": quality_error} if quality_error else {}),
+        },
+        "coverage": {
+            "artifacts": cov_files,
+            "configured": bool(cov_files),
+        },
+        "needsConsent": consent_pending,
+        "gaps": gaps,
+    }
+
+
+def cmd_discover(as_json=False, current_quality="", quality_error=""):
+    repo = root()
+    os.chdir(repo)
+    report = discover_report(repo, current_quality=current_quality, quality_error=quality_error)
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+    print(f"[doctor-deploy] repo: {report['git']['root']} (branch {report['git']['branch']})")
+    print(f"[doctor-deploy] stacks: {', '.join(report['stacks'].keys()) or 'nenhuma detectada'}")
+    print(f"[doctor-deploy] ci: {', '.join(c['path'] for c in report['ci']) or 'nenhum'}")
+    q = report["quality"]
+    print(f"[doctor-deploy] quality: {q['entrypoint'] or ('ausente — sugestão: ' + q['suggested'] if q['suggested'] else 'ausente')}")
+    print(f"[doctor-deploy] cobertura: {', '.join(report['coverage']['artifacts']) or 'nenhum artefato'}")
+    if report["gaps"]:
+        print("[doctor-deploy] gaps: " + "; ".join(report["gaps"]))
+    else:
+        print("[doctor-deploy] gaps: nenhum")
+
+
 def main():
     argv = sys.argv[1:]
     if not argv:
@@ -1334,6 +1554,14 @@ def main():
         return
     if cmd == "config-branches":
         cmd_config_branches()
+        return
+    if cmd == "discover":
+        as_json = "--json" in argv
+        idx_q = argv.index("--quality") if "--quality" in argv else -1
+        q = argv[idx_q + 1] if 0 <= idx_q and idx_q + 1 < len(argv) else ""
+        idx_e = argv.index("--quality-error") if "--quality-error" in argv else -1
+        qerr = argv[idx_e + 1] if 0 <= idx_e and idx_e + 1 < len(argv) else ""
+        cmd_discover(as_json=as_json, current_quality=q, quality_error=qerr)
         return
     raise SystemExit(f"comando desconhecido: {cmd}")
 

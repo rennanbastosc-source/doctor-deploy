@@ -594,4 +594,35 @@ printf '%s\n%s\n%s\n%s\n%s\n%s\n' 'export const a1=1' 'export const a2=2' 'expor
 git add -A && git commit -qm grande
 layer size red "limits.size = 5 no .doctor-deploy.json não reprovou arquivo de 6 linhas"
 
+# discover --json: detecta stack JS/bun, scripts, CI (.github/workflows/*.yml), husky, .doctor-deploy.json e gaps
+newrepo discrepo
+mkdir -p .github/workflows .husky reports
+cat > .github/workflows/ci.yml <<'YAML'
+jobs:
+  test:
+    steps:
+      - run: bun install --frozen-lockfile
+      - run: |
+          bun --bun run check
+          bun --bun run test:coverage
+YAML
+printf '%s\n' '{"scripts":{"check":"biome check","typecheck":"tsc --noEmit","test:coverage":"vitest run --coverage"}}' > package.json
+: > bun.lock
+printf '%s\n' '{"coverageFiles":["reports/lcov.info"]}' > .doctor-deploy.json
+: > reports/lcov.info
+git add -A && git commit -qm base
+HOME="$WORK/home" USERPROFILE="$WORK/home" "$GATE" discover --json > "$WORK/disc.json"
+"$PYTHON" -c 'import json,sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["stacks"]["js"]["packageManager"] == "bun", d
+assert "husky" in d["git"]["hooksManagers"], d
+assert d["config"]["exists"] is True, d
+assert "reports/lcov.info" in d["coverage"]["artifacts"], d
+cmds = d["ci"][0]["commands"]
+assert "bun install --frozen-lockfile" in cmds and "bun --bun run test:coverage" in cmds, cmds
+assert d["quality"]["configured"] is False, d
+assert "bun --bun run check && bun --bun run typecheck && bun --bun run test:coverage" == d["quality"]["suggested"], d
+assert "sem entrypoint de quality" in d["gaps"], d["gaps"]' "$WORK/disc.json"
+"$GATE" discover | grep -q "stacks: js"
+
 echo "self-check ok"

@@ -146,6 +146,18 @@ case "$cmd" in
     [ -n "${1:-}" ] && [ -n "${2:-}" ] || die "consent <lizard|mutation> <yes|no>"
     "$PYTHON" "$PY" consent "$1" "$2"
     ;;
+  discover)
+    cd "$(git rev-parse --show-toplevel)"
+    set +e
+    q=$(quality_entry 2>&1)
+    qok=$?
+    set -e
+    if [ "$qok" -eq 0 ]; then
+      "$PYTHON" "$PY" discover --quality "$q" "$@"
+    else
+      "$PYTHON" "$PY" discover --quality "" --quality-error "$q" "$@"
+    fi
+    ;;
   preflight)
     # Confere o repo atual sem rodar nada. Só a falta de quality reprova; o resto vira skip no portão.
     cd "$(git rev-parse --show-toplevel)"
@@ -250,6 +262,6 @@ case "$cmd" in
     "$0" prepare
     ;;
   *)
-    die "uso: preflight | cc | integration | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
+    die "uso: discover [--json] | preflight | cc | integration | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
     ;;
 esac

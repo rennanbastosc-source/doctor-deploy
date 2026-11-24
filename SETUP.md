@@ -1,6 +1,6 @@
 # Setup do portão num repo novo
 
-Leia quando `gate.sh preflight` reprovar. O setup só termina quando o `preflight` sai verde **e** um `quality` real gerou o artefato de cobertura. Não existe marca de "setup feito": o preflight verde é a prova.
+Leia quando `gate.sh preflight` reprovar. Comece rodando `gate.sh discover --json` para inspecionar stacks, workflows de CI, gerenciadores de hook e sugestões de `quality`. O setup só termina quando o `preflight` sai verde **e** um `quality` real gerou o artefato de cobertura. Não existe marca de "setup feito": o preflight verde é a prova.
 
 Stacks de referência: Next + npm + eslint + Prisma e TanStack Start + bun + biome + Drizzle/libsql. O corpo é o mesmo; muda o runtime. Em Go, Rails, Python ou qualquer outra stack vale o mesmo contrato com as ferramentas da linguagem (tabela da seção 1). Monte com as ferramentas que o repo já tem. Não adicione framework de teste, linter ou runner se o repo já tem um.
 
