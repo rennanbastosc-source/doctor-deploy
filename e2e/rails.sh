@@ -56,7 +56,7 @@ matcher:
     - Pagamentos::Cobrar
 EOF
 # O .gitignore que o rails new gera sem --skip-git, mais a cobertura.
-printf '/log/*\n/tmp/*\n/storage/*\n/db/*.sqlite3*\n/.bundle\ncoverage/\n' > .gitignore
+printf '/log/*\n/tmp/*\n/storage/*\n/db/*.sqlite3*\n/.bundle\ncoverage/\n.mutant/\n' > .gitignore
 bin/rails db:migrate >/dev/null
 base_here
 
