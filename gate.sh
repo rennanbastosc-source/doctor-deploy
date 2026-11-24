@@ -28,7 +28,7 @@ quality_entry() {
     q=$("$PYTHON" -c'
 import json, sys
 try:
-    print(json.load(open("package.json")).get("scripts", {}).get("quality", ""))
+    print(json.load(open("package.json", encoding="utf-8")).get("scripts", {}).get("quality", ""))
 except (OSError, ValueError, AttributeError) as exc:
     sys.exit(f"[doctor-deploy] package.json ilegível: {exc}")
 ')
@@ -62,12 +62,12 @@ except (OSError, ValueError, AttributeError) as exc:
 
 # Shim do pre-push. Acha a skill na hora do push: o plugin do Claude Code muda de pasta a cada versão.
 # Ordem: $DOCTOR_DEPLOY_HOME, a pasta de quando o hook foi instalado, o clone em ~/.agents/skills,
-# o plugin mais novo em ~/.claude/plugins/cache. Sem skill: bloqueia só a branch protegida.
+# o plugin do Antigravity e o plugin mais novo em ~/.claude/plugins/cache. Sem skill: bloqueia só a branch protegida.
 write_shim() {
   cat > "$1" <<EOF
 #!/bin/sh
 # doctor-deploy: shim
-for d in "\${DOCTOR_DEPLOY_HOME:-}" "$SKILL_DIR" "\$HOME/.agents/skills/doctor-deploy"; do
+for d in "\${DOCTOR_DEPLOY_HOME:-}" "$SKILL_DIR" "\$HOME/.agents/skills/doctor-deploy" "\$HOME/.gemini/config/plugins/doctor-deploy/skills/doctor-deploy"; do
   [ -n "\$d" ] && [ -f "\$d/pre-push.sh" ] && exec "\$d/pre-push.sh"
 done
 best=
