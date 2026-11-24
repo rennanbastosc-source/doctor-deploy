@@ -1,21 +1,32 @@
 #!/bin/sh
-# Prova os 5 casos do recibo mais hits 0 no lcov. Não toca no repo do chamador.
+# Prova os 5 casos do recibo, o shim do install-hook num caminho com espaço, hits 0 no lcov e o quality vermelho. Não toca no repo do chamador.
 set -eu
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-GATE=$SKILL_DIR/gate.sh
-HOOK=$SKILL_DIR/pre-push.sh
-PY=$SKILL_DIR/layers.py
 ZERO=0000000000000000000000000000000000000000
-TMP=$(mktemp -d /tmp/opencode/dd-XXXX)
-trap 'rm -rf "$TMP"' EXIT
-cd "$TMP"
+# Mesmo fallback do gate.sh: no Windows, `python3` pode ser o atalho da Microsoft Store.
+PYTHON=python3
+"$PYTHON" -c '' >/dev/null 2>&1 || PYTHON=python
+# Espaço no caminho de propósito: a skill copiada e o shim instalado têm de aguentar.
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/dd XXXX")
+trap 'rm -rf "$WORK"' EXIT
+SKILL="$WORK/skill dir"
+mkdir -p "$SKILL"
+cp "$SKILL_DIR/gate.sh" "$SKILL_DIR/pre-push.sh" "$SKILL_DIR/layers.py" "$SKILL"
+GATE=$SKILL/gate.sh
+PY=$SKILL/layers.py
+TMP=$WORK/repo
+mkdir -p "$TMP" && cd "$TMP"
 git init -b main >/dev/null
 git config user.email t@example.com
 git config user.name t
 export CI=1
+"$GATE" install-hook 2>/dev/null
+HOOK=$TMP/.git/hooks/pre-push
+grep -qF "$SKILL/pre-push.sh" "$HOOK"
 
 mkdir -p src
-export DD_STAMP=$(mktemp /tmp/opencode/dd-stamp-XXXX)
+export DD_STAMP="$WORK/stamp"
+: > "$DD_STAMP"
 printf '%s\n' '{"scripts":{"quality":"node stamp.js"}}' > package.json
 printf '%s\n' "require('fs').appendFileSync(process.env.DD_STAMP, '1\n')" > stamp.js
 printf '%s\n' 'export const a = 1' > src/a.ts
@@ -62,7 +73,7 @@ if "$GATE" prepare >/dev/null 2>&1; then
   exit 1
 fi
 rm untracked.txt
-python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["tested_sha"]==sys.argv[2]' \
+"$PYTHON" -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["tested_sha"]==sys.argv[2]' \
   "$(git rev-parse --git-dir)/doctor-deploy/receipt.json" "$SHA_TS"
 
 printf '%s %s %s %s\n' refs/heads/old "$ZERO" refs/heads/old "$ZERO" | "$HOOK"
@@ -82,14 +93,14 @@ BASE=$(git rev-parse HEAD~1)
 git update-ref refs/remotes/origin/master "$BASE"
 printf '%s\n' 'SF:src/a.py' 'DA:1,0' 'end_of_record' > coverage/lcov.info
 touch coverage/lcov.info
-if python3 "$PY" layers --started 0 >/dev/null; then
+if "$PYTHON" "$PY" layers --started 0 >/dev/null; then
   echo "hits 0 não ficou vermelho" >&2
   exit 1
 fi
 printf '%s\n' 'SF:src/a.py' 'DA:1,1' 'end_of_record' > coverage/lcov.info
-python3 "$PY" layers --started 0 >/dev/null
+"$PYTHON" "$PY" layers --started 0 >/dev/null
 printf '%s\n' 'SF:src/outro.py' 'DA:1,1' 'end_of_record' > coverage/lcov.info
-python3 "$PY" layers --started 0 >/dev/null
+"$PYTHON" "$PY" layers --started 0 >/dev/null
 
 mkdir -p "$TMP/deprepo" && cd "$TMP/deprepo"
 git init -b main >/dev/null
@@ -100,7 +111,7 @@ git add package.json && git commit -m a >/dev/null
 git update-ref refs/remotes/origin/master HEAD
 printf '%s\n' '{"name":"t","x":1}' > package.json
 git add package.json && git commit -m b >/dev/null
-if python3 "$PY" layers --started 0 >/dev/null; then
+if "$PYTHON" "$PY" layers --started 0 >/dev/null; then
   echo "manifest sem lock não ficou vermelho" >&2
   exit 1
 fi
@@ -119,7 +130,7 @@ if "$GATE" prepare >/dev/null 2>&1; then
 fi
 git rm -rq scripts && git commit -m b >/dev/null
 "$GATE" prepare >/dev/null 2>&1
-python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert "quality" in r["skipped"], r' \
+"$PYTHON" -c 'import json,sys; r=json.load(open(sys.argv[1])); assert "quality" in r["skipped"], r' \
   "$(git rev-parse --git-dir)/doctor-deploy/receipt.json"
 
 echo "self-check ok"
