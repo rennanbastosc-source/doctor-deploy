@@ -138,6 +138,12 @@ sh scripts/quality.sh >/dev/null 2>&1
 expect mocks green
 expect integration green
 expect diff_cover green
+if [ "$WINDOWS" = 0 ]; then
+  echo "   --- diagnóstico do mutant"
+  bundle exec mutant environment show 2>&1 | sed 's/^/   | /' | head -30 || true
+  bundle exec mutant environment test list 2>&1 | sed 's/^/   | /' | head -15 || true
+  bundle exec mutant run --since origin/main 2>&1 | sed 's/^/   | /' | grep -vE '^\s*\|\s*$' | head -60 || true
+fi
 if [ "$WINDOWS" = 1 ]; then expect mutation skip "fork"; else expect mutation red "Pagamentos::Cobrar#call"; fi
 
 step "testes que verificam valor, borda e falha: mutação verde e recibo"
