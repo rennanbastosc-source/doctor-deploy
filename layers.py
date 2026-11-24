@@ -60,6 +60,12 @@ def consent_path():
     return Path.home() / ".config" / "doctor-deploy" / "consent.json"
 
 
+def quality_skip_allowed():
+    # Liberação explícita por clone: git config doctor-deploy.allowNoQuality true
+    run = git("config", "--bool", "--get", "doctor-deploy.allowNoQuality", check=False)
+    return run.stdout.strip() == "true"
+
+
 def load_json(path):
     try:
         return json.loads(Path(path).read_text())
@@ -434,6 +440,9 @@ def cmd_check(sha):
     receipt = load_json(receipt_path())
     if not receipt or receipt.get("version") != VERSION or receipt.get("result") != "green":
         print("[doctor-deploy] recibo ausente ou inválido", file=sys.stderr)
+        return 1
+    if "quality" in (receipt.get("skipped") or []) and not quality_skip_allowed():
+        print("[doctor-deploy] recibo sem quality e repo sem doctor-deploy.allowNoQuality", file=sys.stderr)
         return 1
     tested = receipt.get("tested_sha") or ""
     if git("merge-base", "--is-ancestor", tested, sha, check=False).returncode != 0:

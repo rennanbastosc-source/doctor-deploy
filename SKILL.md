@@ -31,7 +31,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 `gate.sh prepare`
 
 - Tree suja, inclusive untracked, recusa o recibo. Não commite por conta própria.
-- Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality`, `python3 scripts/quality.py`. Sem entrypoint: fail-open barulhento, a camada entra em `skipped`.
+- Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality`, `python3 scripts/quality.py`. Sem entrypoint: vermelho. A exceção é explícita e por clone: `git config doctor-deploy.allowNoQuality true`. Com ela, `quality` entra em `skipped` e o `check` só aceita esse recibo enquanto a chave existir.
 - Node primeiro. Python pelo `scripts/quality.py`. Rust/Go só se houver `make quality`. O resto não é portão escondido.
 - Depois do quality, as camadas olham o diff contra `origin/master`, `origin/main`, `master` ou `main`. Sem fetch. Sem base, a camada é skip, não vermelho.
 - Verde grava `$(git rev-parse --git-dir)/doctor-deploy/receipt.json` com SHA testado, SHA da base, versão e camadas puladas. Imprima as puladas. Pare.

@@ -47,7 +47,7 @@ run_quality() {
     "$PYTHON" scripts/quality.py
     return $?
   fi
-  echo "[doctor-deploy] nenhum entrypoint (npm/pnpm/bun/yarn quality, make quality, scripts/quality.py) — fail-open" >&2
+  echo "[doctor-deploy] nenhum entrypoint (npm/pnpm/bun/yarn quality, make quality, scripts/quality.py) — quality pulado" >&2
   # Variável, não código de saída: make sai 2 e um script pode sair com qualquer código.
   quality_skipped=1
   return 0
@@ -94,6 +94,9 @@ case "$cmd" in
     set -e
     if [ "$qstatus" -ne 0 ]; then
       die "GATE RED no quality (saída $qstatus)"
+    fi
+    if [ "$quality_skipped" -eq 1 ] && [ "$(git config --bool --get doctor-deploy.allowNoQuality || true)" != true ]; then
+      die "GATE RED: sem entrypoint de quality. Crie um, ou libere este clone: git config doctor-deploy.allowNoQuality true"
     fi
     set +e
     layers_json=$("$PYTHON" "$PY" layers --started "$started")

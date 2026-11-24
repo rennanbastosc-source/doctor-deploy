@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prova os 5 casos do recibo, o shim do install-hook num caminho com espaço, hits 0 no lcov e o quality vermelho. Não toca no repo do chamador.
+# Prova os 5 casos do recibo, o shim do install-hook num caminho com espaço, hits 0 no lcov o quality vermelho e o quality ausente. Não toca no repo do chamador.
 set -eu
 SKILL_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 ZERO=0000000000000000000000000000000000000000
@@ -129,7 +129,18 @@ if "$GATE" prepare >/dev/null 2>&1; then
   exit 1
 fi
 git rm -rq scripts && git commit -m b >/dev/null
+if "$GATE" prepare >/dev/null 2>&1; then
+  echo "sem quality e sem liberação gravou recibo" >&2
+  exit 1
+fi
+git config doctor-deploy.allowNoQuality true
 "$GATE" prepare >/dev/null 2>&1
+"$GATE" check "$(git rev-parse HEAD)" >/dev/null 2>&1
+git config --unset doctor-deploy.allowNoQuality
+if "$GATE" check "$(git rev-parse HEAD)" >/dev/null 2>&1; then
+  echo "check aceitou recibo sem quality depois de revogada a liberação" >&2
+  exit 1
+fi
 "$PYTHON" -c 'import json,sys; r=json.load(open(sys.argv[1])); assert "quality" in r["skipped"], r' \
   "$(git rev-parse --git-dir)/doctor-deploy/receipt.json"
 
