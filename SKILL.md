@@ -11,14 +11,15 @@ description: >-
 
 # Doctor Deploy
 
-Canônico em `~/.agents/skills/doctor-deploy`. Os scripts são POSIX, LF (no Windows rodam no sh do Git for Windows, o mesmo dos hooks) e chamam `python3`, ou `python` quando `python3` não roda (atalho da Microsoft Store), em modo UTF-8. Não copie esta skill para o repo. Não instale ferramenta com `pip install --user` (PEP 668 no Ubuntu).
+Canônico em `~/.agents/skills/doctor-deploy`. Todo `gate.sh` deste texto e do [SETUP.md](SETUP.md) é `"$HOME/.agents/skills/doctor-deploy/gate.sh"`, rodado de dentro do repo do projeto; no Windows, pelo sh do Git: `"/c/Program Files/Git/bin/sh.exe" "$HOME/.agents/skills/doctor-deploy/gate.sh" prepare`. Os scripts são POSIX, LF (no Windows rodam no sh do Git for Windows, o mesmo dos hooks) e chamam `python3`, ou `python` quando `python3` não roda (atalho da Microsoft Store), em modo UTF-8. Não copie esta skill para o repo. Não instale ferramenta com `pip install --user` (PEP 668 no Ubuntu).
 
 O portão existe para não subir vermelho. Repetir um verde já gravado é o bug, não rigor. Um recibo válido é o verde.
 
 ## Modos
 
-- **Preparo** ("prepara o merge", "prepara a PR", "deixa pronto"): rode o portão, grave o recibo, pare. Não faça push.
+- **Preparo** ("prepara o merge", "prepara a PR", "deixa pronto"): rode o portão, grave o recibo, pare. Não faça push e não crie a PR: "prepara a PR" é deixar o commit pronto para ela. `gh pr create` só quando o usuário pedir a PR.
 - **Push/merge** ("faz o push", "mergear", "squash-merge", "sobe pra main"): confira o recibo primeiro. Se for válido, faça a operação e não rode o quality de novo.
+- **Push para branch não protegida** (fora de `PUSH_GATE_BRANCHES`, padrão `main,master`): o hook não age, e o agente não roda `check` nem `prepare`. O portão protege a branch principal; na PR, quem cobra é o CI do projeto, quando existe. Se o usuário pedir o preparo, é o modo Preparo.
 - **Commit sem push:** não dispare esta skill.
 
 ## Antes de tudo
