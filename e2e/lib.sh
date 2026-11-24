@@ -6,7 +6,7 @@ PY=$SKILL_DIR/layers.py
 PYTHON=python3
 "$PYTHON" -c '' >/dev/null 2>&1 || PYTHON=python
 export PYTHONUTF8=1
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/dd-e2e XXXX")
+WORK=$(CDPATH= cd -- "$(mktemp -d "${TMPDIR:-/tmp}/dd-e2e XXXX")" && pwd)
 [ -n "${E2E_KEEP:-}" ] || trap 'rm -rf "$WORK"' EXIT
 # Consentimento isolado: não toca no ~/.config de quem roda.
 export XDG_CONFIG_HOME="$WORK/config"

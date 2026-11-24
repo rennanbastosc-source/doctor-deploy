@@ -230,7 +230,8 @@ def parse_simplecov(text, repo):
         data = json.loads(text)
     except json.JSONDecodeError:
         return {}, {}
-    cov, br = {}, {}
+    cov, arms = {}, {}
+    # Várias execuções no mesmo arquivo (suites, merge do SimpleCov): linha e branch valem o maior hits.
     for suite in data.values():
         for name, entry in ((suite or {}).get("coverage") or {}).items():
             path = norm(name, repo)
@@ -240,18 +241,27 @@ def parse_simplecov(text, repo):
                 if hits is not None:
                     target[idx + 1] = max(target.get(idx + 1, 0), int(hits))
             if isinstance(entry, dict):
-                simplecov_branches(entry.get("branches") or {}, br.setdefault(path, {}))
-    return cov, br
+                simplecov_arms(entry.get("branches") or {}, arms.setdefault(path, {}))
+    return cov, {path: unexercised(found) for path, found in arms.items()}
 
 
-def simplecov_branches(branches, target):
+def unexercised(arms):
+    """{(linha, branch): hits} -> {linha: branches com hits 0}."""
+    out = {}
+    for (line, _), hits in arms.items():
+        if not hits:
+            out[line] = out.get(line, 0) + 1
+    return out
+
+
+def simplecov_arms(branches, target):
     """"[:if, 0, 5, 4, 7, 7]" -> {"[:then, 1, 6, 6, 6, 10]": hits}; o 3º campo é a linha."""
-    for arms in branches.values():
+    for cond, arms in branches.items():
         for key, hits in arms.items():
             found = re.match(r"\[:\w+, -?\d+, (\d+)", key)
-            if found and not hits:
-                num = int(found.group(1))
-                target[num] = target.get(num, 0) + 1
+            if found:
+                arm = (int(found.group(1)), cond + key)
+                target[arm] = max(target.get(arm, 0), int(hits or 0))
 
 
 COVERAGE_FILES = [
@@ -887,7 +897,8 @@ def stryker_survivors(repo, added):
 
 JS_EXT = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 # mutant: "evil:Pagamentos::Cobrar#call:/abs/app/services/pagamentos/cobrar.rb:7:3f2a1" = mutante vivo.
-MUTANT_EVIL = re.compile(r"^evil:(\S+?):(.+\.rb):(\d+):[0-9a-f]+$", re.MULTILINE)
+# O subject tem "::" (Pagamentos::Cobrar#call): ele vai até o ":" antes do caminho absoluto.
+MUTANT_EVIL = re.compile(r"^evil:(\S+?):((?:/|[A-Za-z]:[\\/])[^\n]+?\.rb):(\d+):[0-9a-f]+\s*$", re.MULTILINE)
 
 
 def diff_added(base, exts):
@@ -1000,10 +1011,17 @@ def mutation_layer(repo, base, warnings):
     if not base:
         warnings.append("mutação: sem base, skip")
         return "skip"
-    for mutate in (mutate_stryker, mutate_gremlins, mutate_mutant):
-        result = mutate(repo, base, warnings)
-        if result is not None:
-            return result
+    # O mutador roda a suíte de novo (o mutant com o SimpleCov ligado em cada mutante): a cobertura
+    # do quality é restaurada, senão o próximo prepare herda o lixo pelo merge do SimpleCov.
+    saved = {p: p.read_bytes() for p in (repo / name for name in COVERAGE_FILES) if p.is_file()}
+    try:
+        for mutate in (mutate_stryker, mutate_gremlins, mutate_mutant):
+            result = mutate(repo, base, warnings)
+            if result is not None:
+                return result
+    finally:
+        for path, data in saved.items():
+            path.write_bytes(data)
     warnings.append("mutação: sem mutador (Stryker em node_modules, gremlins com go.mod, mutant com .mutant.yml), skip")
     return "skip"
 

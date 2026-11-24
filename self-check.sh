@@ -7,7 +7,8 @@ ZERO=0000000000000000000000000000000000000000
 PYTHON=python3
 "$PYTHON" -c '' >/dev/null 2>&1 || PYTHON=python
 # Espaço no caminho de propósito: a skill copiada e o shim instalado têm de aguentar.
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/dd XXXX")
+# cd + pwd normaliza: no macOS o TMPDIR termina em "/" e o caminho ficaria com "//".
+WORK=$(CDPATH= cd -- "$(mktemp -d "${TMPDIR:-/tmp}/dd XXXX")" && pwd)
 trap 'rm -rf "$WORK"' EXIT
 SKILL="$WORK/skill dir"
 mkdir -p "$SKILL"
@@ -26,11 +27,12 @@ grep -qF "\"$SKILL\"" "$HOOK"
 "$GATE" preflight 2>&1 | grep -q "ok: hook pre-push é o shim"
 # Shim com a skill fora do lugar de instalação: acha o plugin mais novo; sem skill, bloqueia só a main.
 FHOME=$WORK/fakehome
-for v in 0.0.1 0.0.2; do
+for n in 1 2; do
+  v=0.0.$n
   mkdir -p "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v"
   printf '#!/bin/sh\necho via-plugin-%s >&2\n' "$v" > "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v/pre-push.sh"
   chmod +x "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v/pre-push.sh"
-  touch -t "20260101000$v" "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v/pre-push.sh" 2>/dev/null || sleep 1
+  touch -t "20260101000$n" "$FHOME/.claude/plugins/cache/m/doctor-deploy/$v/pre-push.sh"
 done
 sed "s#$SKILL#$WORK/sumiu#" "$HOOK" > "$WORK/shim" && chmod +x "$WORK/shim"
 : | HOME="$FHOME" "$WORK/shim" 2>&1 | grep -q via-plugin-0.0.2 || { echo "shim não achou o plugin mais novo" >&2; exit 1; }
@@ -391,6 +393,9 @@ printf '{"RSpec":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1
 layer diff_cover red "Rails: linha nova com 0 no SimpleCov não ficou vermelha"
 printf '{"RSpec":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1,1,1,1,null,null,null],"branches":{"[:if, 0, 4, 6, 4, 30]":{"[:then, 1, 4, 6, 4, 20]":0}}}}}}' "$R" > coverage/.resultset.json
 layer diff_cover red "Rails: branch não exercitada no SimpleCov não ficou vermelha"
+# duas execuções no resultset (merge do SimpleCov): o branch coberto em qualquer uma conta como coberto
+printf '{"A":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1,1,1,1,null,null,null],"branches":{"[:if, 0, 4, 6, 4, 30]":{"[:then, 1, 4, 6, 4, 20]":0}}}}},"B":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1,1,1,1,null,null,null],"branches":{"[:if, 0, 4, 6, 4, 30]":{"[:then, 1, 4, 6, 4, 20]":3}}}}}}' "$R" "$R" > coverage/.resultset.json
+layer diff_cover green "Rails: branch coberto numa das execuções do resultset ficou vermelho"
 # mutant falso via `bundle exec mutant run --since`: imprime a linha "evil:" de mutante vivo
 printf 'GEM\n  specs:\n    mutant (0.17.1)\n' > Gemfile.lock
 printf 'usage: opensource\nintegration:\n  name: minitest\n' > .mutant.yml
@@ -404,7 +409,9 @@ JS
 fake_bin bundle
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) mutf evil 0 skip "mutant no Windows (sem fork)" ;;
-  *) mutf evil 0 red mutant; mutf killed 0 green mutant ;;
+  *) mutf evil 0 red mutant; mutf killed 0 green mutant
+     PATH="$FAKE:$PATH" HOME="$WORK/home" USERPROFILE="$WORK/home" FAKE_STATUS=evil "$PYTHON" "$PY" layers --started 0 2>/dev/null \
+       | grep -q "cobrar.rb:3 Pagamentos::Cobrar#call" || { echo "aviso do mutant sem o subject completo" >&2; exit 1; } ;;
 esac
 
 # hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
