@@ -105,4 +105,21 @@ if python3 "$PY" layers --started 0 >/dev/null; then
   exit 1
 fi
 
+# quality que sai 2 (como make com erro) é vermelho, não skip; sem entrypoint é skip
+mkdir -p "$TMP/qrepo" && cd "$TMP/qrepo"
+git init -b main >/dev/null
+git config user.email t@example.com
+git config user.name t
+mkdir -p scripts
+printf '%s\n' 'raise SystemExit(2)' > scripts/quality.py
+git add scripts && git commit -m a >/dev/null
+if "$GATE" prepare >/dev/null 2>&1; then
+  echo "quality com saída 2 não ficou vermelho" >&2
+  exit 1
+fi
+git rm -rq scripts && git commit -m b >/dev/null
+"$GATE" prepare >/dev/null 2>&1
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert "quality" in r["skipped"], r' \
+  "$(git rev-parse --git-dir)/doctor-deploy/receipt.json"
+
 echo "self-check ok"

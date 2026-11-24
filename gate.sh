@@ -48,7 +48,9 @@ run_quality() {
     return $?
   fi
   echo "[doctor-deploy] nenhum entrypoint (npm/pnpm/bun/yarn quality, make quality, scripts/quality.py) — fail-open" >&2
-  return 2
+  # Variável, não código de saída: make sai 2 e um script pode sair com qualquer código.
+  quality_skipped=1
+  return 0
 }
 
 case "$cmd" in
@@ -90,11 +92,8 @@ case "$cmd" in
     run_quality
     qstatus=$?
     set -e
-    if [ "$qstatus" -eq 1 ]; then
-      die "GATE RED no quality"
-    fi
-    if [ "$qstatus" -eq 2 ]; then
-      quality_skipped=1
+    if [ "$qstatus" -ne 0 ]; then
+      die "GATE RED no quality (saída $qstatus)"
     fi
     set +e
     layers_json=$("$PYTHON" "$PY" layers --started "$started")
