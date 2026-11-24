@@ -1,0 +1,75 @@
+---
+name: doctor-deploy
+description: >-
+  Doctor Deploy: portão local de push/merge com recibo. Use no /dd e quando
+  o usuário pedir push, merge, squash-merge, publish, deploy, "faz o push",
+  "commita e pusha", "mergear", "sobe pra main", "prepara o merge",
+  "prepara a PR" ou "deixa pronto pro merge". No preparo roda o portão uma
+  vez e grava o verde. No push/merge não repete se o SHA empurrado for o
+  testado ou descendente só com *.md. Não use para commit sem push.
+---
+
+# Doctor Deploy
+
+Canônico em `~/.agents/skills/doctor-deploy`. Os scripts são POSIX, LF (no Windows rodam no sh do Git for Windows, o mesmo dos hooks) e chamam `python3`, ou `python` quando `python3` não roda (atalho da Microsoft Store), em modo UTF-8. Não copie esta skill para o repo. Não instale ferramenta com `pip install --user` (PEP 668 no Ubuntu).
+
+O portão existe para não subir vermelho. Repetir um verde já gravado é o bug, não rigor. Um recibo válido é o verde.
+
+## Modos
+
+- **Preparo** ("prepara o merge", "prepara a PR", "deixa pronto"): rode o portão, grave o recibo, pare. Não faça push.
+- **Push/merge** ("faz o push", "mergear", "squash-merge", "sobe pra main"): confira o recibo primeiro. Se for válido, faça a operação e não rode o quality de novo.
+- **Commit sem push:** não dispare esta skill.
+
+## Antes de tudo
+
+1. `gate.sh install-hook` — só cria o shim se `.git/hooks/pre-push` não existir. Hook de projeto não se sobrescreve.
+2. `gate.sh needs-consent` — se imprimir `NEED_CONSENT`, pergunte uma vez. `gate.sh consent lizard yes|no` e `gate.sh consent mutation yes|no`. `yes` não instala sozinho: instale no usuário (`pipx` ou `uv tool`), grave a versão no consentimento, não atualize no portão. Sem `pipx`/`uv`, diga isso e deixe a camada em skip. Nunca vire dependência do repo.
+
+## Preparo
+
+`gate.sh prepare`
+
+- Tree suja, inclusive untracked, recusa o recibo. Não commite por conta própria.
+- Quality é o entrypoint do projeto, nesta ordem: `npm`/`pnpm`/`bun`/`yarn run quality` (o lock da raiz escolhe o gerenciador), `make quality`, `python3 scripts/quality.py`. Sem entrypoint: fail-open barulhento, a camada entra em `skipped`.
+- Node primeiro. Python pelo `scripts/quality.py`. Rust/Go só se houver `make quality`. O resto não é portão escondido.
+- Depois do quality, as camadas olham o diff contra `origin/master`, `origin/main`, `master` ou `main`. Sem fetch. Sem base, a camada é skip, não vermelho.
+- Verde grava `$(git rev-parse --git-dir)/doctor-deploy/receipt.json` com SHA testado, SHA da base, versão e camadas puladas. Imprima as puladas. Pare.
+
+## Push / merge
+
+`gate.sh check <sha-que-vai-subir>`
+
+Válido se o recibo está verde, a versão bate, o SHA é o testado ou descendente linear, e o delta é só `*.md`. A mensagem do commit não conta: `docs:` com `.ts` ou `.json` invalida. O risco aceito é um `.md` que a suíte lê (no frota, `docs/invariantes` vs `mapa-invariantes.test.ts`) passar sem rerodar.
+
+Se o check sair 0, faça o push ou o merge. Não chame quality. O hook faz a mesma leitura e sai 0.
+
+Se sair não-zero, rode `prepare` de novo e só então empurre. O hook, sem recibo, só roda o portão se `HEAD` for o `local_sha` e a tree estiver limpa. Caso contrário bloqueia: não testa a working tree no lugar de outro commit.
+
+Deleção de branch não passa pelo portão e não desliga o portão dos outros refs do mesmo push.
+
+## Camadas do diff
+
+| Camada | Vermelho | Skip barulhento |
+|---|---|---|
+| Quality | entrypoint falhou | sem entrypoint |
+| Diff-cover | linha alterada de fonte presente no lcov/cobertura fresco com hits 0 | sem artefato, artefato velho, ou sem base. Arquivo fora do relatório é aviso, não verde silencioso e não vermelho |
+| Tamanho | arquivo novo de fonte acima de 400 linhas, ou editado que sai de ≤400 para >400 | teste, gerado, sem base |
+| CC | função nova com CC > 15, ou alterada que cruza 15, se `lizard` existir | sem lizard, sem aceite, teste, gerado |
+| Lock | manifest da raiz mudou no diff e nenhum lock correspondente mudou | sem base |
+| Audit | high/critical quando o lock mudou e a ferramenta existe | ferramenta ausente, rede, lock intocado |
+| Mutação | nunca | sem mutador, recusa, ou timeout de 180s. O resultado vai no aviso, não no vermelho |
+
+Diff-cover não exige 100% das linhas alteradas. Linha que o relatório não lista não é executável comprovada. Hits 0 é a barra.
+
+Tetos 400 e 15 são constantes da skill. Não crie config por repo. Não abaixe threshold, não alargue exclude, não apague teste para passar.
+
+## Reparo
+
+Vermelho: no máximo 3 rodadas. Conserte a causa, rode `prepare` de novo. Reparo muda a árvore, o recibo velho morre. Falha pré-existente fora do diff vai em commit separado. Não use `--no-verify` salvo emergência declarada, e só depois das 3 rodadas. Diga o motivo numa linha.
+
+## O que esta skill não cobre
+
+Merge pela UI do GitHub e `gh pr merge` não passam pelo hook. O recibo cobre o agente e o `git push`. Convenção de PR, spec, schema em produção e prova de deploy ficam no `AGENTS.md` do projeto. Se esse arquivo for mais rígido, ele ganha.
+
+**Frota:** o §8 diz que commit que já vai ser pushado é o push. Isso anula o recibo até o projeto ganhar a mesma ressalva: recibo válido, ou recibo válido mais delta só `*.md`, é o verde. Não edite o repo daqui. O hook do frota, se já existir, não é sobrescrito; enquanto ele não consultar o recibo, o `git push` para `master` ainda roda o quality do projeto.
