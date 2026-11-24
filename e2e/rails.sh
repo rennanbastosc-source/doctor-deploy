@@ -189,7 +189,7 @@ EOF
 commit "testes fortes"
 sh scripts/quality.sh >/dev/null 2>&1
 if [ "$WINDOWS" = 1 ]; then expect mutation skip; else expect mutation green; fi
-"$GATE" prepare >"$WORK/prepare.log" 2>&1 || { tail -5 "$WORK/prepare.log"; exit 1; }
+"$GATE" prepare >"$WORK/prepare.log" 2>&1 || { tail -5 "$WORK/prepare.log"; git status --short | head -20; exit 1; }
 "$GATE" check "$(git rev-parse HEAD)" 2>&1 | grep -q "recibo verde"
 echo "   recibo verde"
 

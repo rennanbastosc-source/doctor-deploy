@@ -113,7 +113,7 @@ func TestTotal(t *testing.T) {
 EOF
 commit "teste forte"
 if [ "$WINDOWS" = 1 ]; then expect mutation skip; else expect mutation green; fi
-"$GATE" prepare >"$WORK/prepare.log" 2>&1 || { tail -5 "$WORK/prepare.log"; exit 1; }
+"$GATE" prepare >"$WORK/prepare.log" 2>&1 || { tail -5 "$WORK/prepare.log"; git status --short | head -20; exit 1; }
 "$GATE" check "$(git rev-parse HEAD)" 2>&1 | grep -q "recibo verde"
 echo "   recibo verde"
 
