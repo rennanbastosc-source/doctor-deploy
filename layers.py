@@ -145,13 +145,17 @@ def base_candidates(cfg=None):
     return list(dict.fromkeys(refs))
 
 
-def base_sha(cfg=None):
+def base_sha(cfg=None, base_ref=None):
     cfg = repo_config() if cfg is None else cfg
     head = git("rev-parse", "HEAD").stdout.strip()
-    for ref in base_candidates(cfg):
+    if base_ref:
+        refs = [base_ref] if "/" in base_ref else [f"origin/{base_ref}", base_ref]
+    else:
+        refs = base_candidates(cfg)
+    for ref in refs:
         if git("rev-parse", "--verify", "--quiet", ref, check=False).returncode != 0:
             continue
-        if git("rev-parse", ref).stdout.strip() == head:
+        if not base_ref and git("rev-parse", ref).stdout.strip() == head:
             continue
         found = git("merge-base", "HEAD", ref, check=False)
         if found.returncode == 0 and found.stdout.strip():
@@ -1264,11 +1268,11 @@ def mutation_layer(repo, base, warnings, cfg=None):
     return "skip"
 
 
-def cmd_layers(started):
+def cmd_layers(started, base_ref=None):
     repo = root()
     os.chdir(repo)
     cfg = repo_config(repo)
-    base = base_sha(cfg)
+    base = base_sha(cfg, base_ref)
     disabled = {item for item in (cfg.get("disableLayers") or ()) if isinstance(item, str)}
     warnings = []
     steps = {
@@ -1642,9 +1646,16 @@ def main():
     cmd = argv[0]
     if cmd == "layers":
         started = 0
+        base_ref = None
         if "--started" in argv:
-            started = int(argv[argv.index("--started") + 1])
-        raise SystemExit(cmd_layers(started))
+            idx_s = argv.index("--started")
+            if idx_s + 1 < len(argv):
+                started = int(argv[idx_s + 1])
+        if "--base" in argv:
+            idx_b = argv.index("--base")
+            if idx_b + 1 < len(argv):
+                base_ref = argv[idx_b + 1]
+        raise SystemExit(cmd_layers(started, base_ref=base_ref))
     if cmd == "write-receipt":
         skipped = argv[argv.index("--quality-skipped") + 1] == "1"
         raw = argv[argv.index("--layers") + 1]

@@ -58,7 +58,21 @@ sh <skill>/gate.sh install-hook   # instala o pre-push (não sobrescreve hook do
 sh <skill>/gate.sh cc             # complexidade das funções do diff, antes dos testes
 sh <skill>/gate.sh integration    # módulos do diff sem teste de integração
 sh <skill>/gate.sh prepare        # quality + camadas; verde grava o recibo
+sh <skill>/gate.sh ci             # mesmo portão para runners de CI (sem recibo nem tree limpa)
 sh <skill>/gate.sh check <sha>    # recibo vale para esse commit?
+```
+
+### No GitHub Actions (CI)
+
+Para cobrar as camadas do diff também em PRs e merges via UI do GitHub:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- uses: rennanbastosc-source/doctor-deploy@main
+  with:
+    run-quality: "true" # ou "false" (usa --no-quality) se um passo anterior já rodou os testes
 ```
 
 O recibo vale para o commit com o mesmo conteúdo do testado, salvo `*.md`. Squash e rebase do commit testado passam; se a base andou, o código alheio aparece no delta e o recibo cai. As regras completas estão no [SKILL.md](SKILL.md).

@@ -75,7 +75,7 @@ Vermelho: no máximo 3 rodadas. Conserte a causa, rode `prepare` de novo. Reparo
 
 ## O que esta skill não cobre
 
-Merge pela UI do GitHub e `gh pr merge` não passam pelo hook. O recibo cobre o agente e o `git push`. Convenção de PR, spec, schema em produção e prova de deploy ficam no `AGENTS.md` do projeto. Se esse arquivo for mais rígido, ele ganha.
+Merge pela UI do GitHub e `gh pr merge` não passam pelo hook. O recibo cobre o agente e o `git push`. Para cobrar as mesmas camadas do diff na PR, use `gate.sh ci [--base <ref>] [--no-quality]` ou a action `rennanbastosc-source/doctor-deploy@main` no workflow de CI. Convenção de PR, spec, schema em produção e prova de deploy ficam no `AGENTS.md` do projeto. Se esse arquivo for mais rígido, ele ganha.
 
 Se o `AGENTS.md` disser que o check de CI é o recibo da PR, não rode `prepare` em PR: o portão seria pago duas vezes. O recibo vale para o push direto na branch principal.
 
