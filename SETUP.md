@@ -64,6 +64,33 @@ A skill cobra isso em três camadas: `mocks` (linhas adicionadas em teste que mo
 
 **Mutação (opcional, com o consentimento `gate.sh consent mutation yes`):** instale o Stryker como dependência de dev do projeto (`@stryker-mutator/core` e o runner, `@stryker-mutator/vitest-runner` no Vitest) com um `stryker.config.json` que aponte o runner (`"testRunner": "vitest"`, `"coverageAnalysis": "perTest"`). TypeScript 7 (nativo, sem API JS, caso do frota) quebra o Stryker 10 em `ts.parseConfigFileTextToJson`: ponha `"tsconfigFile": "stryker-sem-tsconfig.json"` (arquivo inexistente) para ele não reescrever o tsconfig no sandbox. No frota, o diff de uma linha no `sla.service.ts` mutou o arquivo inteiro em ~50 s. A camada roda `stryker run --mutate <fontes JS/TS do diff> --reporters json` e lê `reports/mutation/mutation.json` (ponha `reports/` no `.gitignore`). Mutante `Survived` ou `NoCoverage` numa linha adicionada é vermelho: o código mudou e nenhum teste quebrou. Conserte com uma asserção que pegue a mudança. Mutante equivalente (a mudança não altera o comportamento) sai com `// Stryker disable next-line <Operador>: <motivo>` na linha, que fica no diff para a review. Timeout de 180s é skip barulhento: diff grande demais para mutar no push.
 
+**Mutação em Go:** `go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0` (ferramenta da máquina, não do repo). A camada roda `gremlins unleash --diff <base> --timeout-coefficient 30` e lê o JSON: `LIVED` ou `NOT COVERED` numa linha adicionada é vermelho. Sem config no repo. No Windows, o gremlins até a 0.6.0 marca tudo `NOT COVERED` (bug de caminho) e a camada pula.
+
+**Mutação em Rails:** gems `mutant-minitest` (ou `mutant-rspec`) no grupo `:test`, mais um `.mutant.yml` e um helper que carrega app e testes. No minitest, cada teste declara o que cobre (`cover "Pagamentos::Cobrar*"`, com `require "mutant/minitest/coverage"` no `test_helper`). A camada roda `bundle exec mutant run --since <base>`; mutante vivo num método tocado é vermelho, e o aviso mostra a linha mutada.
+
+```yaml
+# .mutant.yml
+usage: opensource      # ou commercial: é a licença do mutant, decisão do dono do repo
+integration:
+  name: minitest
+includes: [test]
+requires: [./test/mutant_helper]
+jobs: 1                # SQLite num arquivo só: um mutante por vez
+matcher:
+  subjects: [Pagamentos::Cobrar, Pedido]   # nomes exatos: "Pagamentos*" pega também Pagamentos::CobrarTest
+```
+
+```ruby
+# test/mutant_helper.rb
+require "minitest"
+def Minitest.autorun = nil   # sem isto, o autorun do rails/test_help lê os argumentos do mutant e todo mutante "sobrevive"
+require_relative "test_helper"
+Rails.application.eager_load!
+Dir[File.join(__dir__, "**/*_test.rb")].each { |file| require file }
+```
+
+O mutant precisa de `fork()`: no Windows a camada pula (use WSL).
+
 ## 5. Hook
 
 `scripts/pre-push.sh` versionado no repo, que faz os passos próprios do projeto (lembrete de E2E no frota, sync de migrations no erp-2f), exporta `PUSH_GATE_BRANCHES=<branch principal>` e delega para `${DOCTOR_DEPLOY_HOOK:-$HOME/.agents/skills/doctor-deploy/pre-push.sh}` (instalado como plugin do Claude Code, exporte `DOCTOR_DEPLOY_HOOK` ou use o shim do `install-hook`, que acha o plugin mais novo sozinho). Sem a skill, bloqueia só o push para a branch principal. Depois, `gate.sh install-hook` grava o shim que executa esse script.

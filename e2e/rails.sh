@@ -53,7 +53,7 @@ requires:
 jobs: 1
 matcher:
   subjects:
-    - Pagamentos*
+    - Pagamentos::Cobrar
 EOF
 # O .gitignore que o rails new gera sem --skip-git, mais a cobertura.
 printf '/log/*\n/tmp/*\n/storage/*\n/db/*.sqlite3*\n/.bundle\ncoverage/\n' > .gitignore

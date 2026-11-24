@@ -986,6 +986,8 @@ def mutant_evil(out, repo):
     heads = list(MUTANT_EVIL.finditer(out))
     found = []
     for i, head in enumerate(heads):
+        if is_test(norm(head.group(2), repo)):
+            continue  # matcher largo (Pagamentos*) pega a classe de teste; mutar teste não prova nada
         block = out[head.end() : heads[i + 1].start() if i + 1 < len(heads) else len(out)]
         plus = re.search(r"^\+(?!\+\+)\s*(.+)$", block, re.MULTILINE)
         what = f"mutante `{plus.group(1).strip()[:100]}`" if plus else "mutante"
