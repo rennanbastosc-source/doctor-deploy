@@ -1,0 +1,57 @@
+name: Doctor Deploy Gate
+description: Run quality and diff-level layers (diff-cover, size, CC, mocks, real-DB integration, audit, mutation) in CI.
+inputs:
+  base-ref:
+    description: Base branch or commit SHA for the diff (defaults to PR base branch or main/master).
+    required: false
+    default: ""
+  run-quality:
+    description: Run the repository quality entrypoint before evaluating diff layers.
+    required: false
+    default: "true"
+  install-lizard:
+    description: Install lizard via pipx/pip when missing so cyclomatic complexity layer runs.
+    required: false
+    default: "true"
+  working-directory:
+    description: Repository directory relative to workspace.
+    required: false
+    default: "."
+runs:
+  using: composite
+  steps:
+    - name: Ensure Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install lizard (optional)
+      if: inputs.install-lizard == 'true'
+      shell: bash
+      run: |
+        if ! command -v lizard >/dev/null 2>&1; then
+          if command -v pipx >/dev/null 2>&1; then
+            pipx install lizard || true
+          else
+            python -m pip install --quiet lizard || true
+          fi
+        fi
+    - name: Run Doctor Deploy CI gate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_BASE_REF: ${{ inputs.base-ref }}
+        INPUT_RUN_QUALITY: ${{ inputs.run-quality }}
+      run: |
+        base="${INPUT_BASE_REF:-${GITHUB_BASE_REF:-}}"
+        if [ -n "$base" ] && ! git rev-parse --verify --quiet "$base" >/dev/null 2>&1 && ! git rev-parse --verify --quiet "origin/$base" >/dev/null 2>&1; then
+          ref_name=${base#origin/}
+          git fetch --no-tags origin "$ref_name":"refs/remotes/origin/$ref_name" || git fetch --no-tags origin "$base" || true
+        fi
+        args=(ci)
+        if [ -n "$base" ]; then
+          args+=(--base "$base")
+        fi
+        if [ "$INPUT_RUN_QUALITY" != "true" ]; then
+          args+=(--no-quality)
+        fi
+        sh "${{ github.action_path }}/gate.sh" "${args[@]}"

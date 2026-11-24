@@ -248,6 +248,85 @@ case "$cmd" in
     "$PYTHON" "$PY" write-receipt --quality-skipped "$quality_skipped" --layers "$layers_json"
     "$PYTHON" "$PY" print-skipped
     ;;
+  ci)
+    command -v "$PYTHON" >/dev/null 2>&1 || die "python ausente"
+    cd "$(git rev-parse --show-toplevel)"
+    ci_base=""
+    ci_explicit_base=0
+    ci_no_quality=0
+    ci_json=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --base)
+          [ -n "${2:-}" ] || die "--base exige uma ref"
+          ci_base=$2
+          ci_explicit_base=1
+          shift 2
+          ;;
+        --no-quality)
+          ci_no_quality=1
+          shift
+          ;;
+        --json)
+          ci_json=1
+          shift
+          ;;
+        *)
+          die "opção desconhecida em ci: $1"
+          ;;
+      esac
+    done
+    if [ "$ci_explicit_base" -eq 1 ]; then
+      if ! git rev-parse --verify --quiet "$ci_base" >/dev/null 2>&1 && ! git rev-parse --verify --quiet "origin/$ci_base" >/dev/null 2>&1; then
+        die "base não encontrada: $ci_base"
+      fi
+    elif [ -z "$ci_base" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
+      ci_base=$GITHUB_BASE_REF
+    fi
+    started=0
+    if [ "$ci_no_quality" -eq 0 ]; then
+      started=$(date +%s)
+      quality_skipped=0
+      set +e
+      if [ "$ci_json" -eq 1 ]; then
+        run_quality >&2
+      else
+        run_quality
+      fi
+      qstatus=$?
+      set -e
+      if [ "$qstatus" -ne 0 ]; then
+        die "GATE RED no quality (saída $qstatus)"
+      fi
+      if [ "$quality_skipped" -eq 1 ] && [ "$(git config --bool --get doctor-deploy.allowNoQuality || true)" != true ]; then
+        die "GATE RED: sem entrypoint de quality"
+      fi
+    fi
+    set +e
+    if [ -n "$ci_base" ]; then
+      layers_json=$("$PYTHON" "$PY" layers --started "$started" --base "$ci_base")
+    else
+      layers_json=$("$PYTHON" "$PY" layers --started "$started")
+    fi
+    lstatus=$?
+    set -e
+    if [ "$ci_json" -eq 1 ]; then
+      printf '%s\n' "$layers_json"
+    fi
+    "$PYTHON" -c '
+import json, sys
+p = json.loads(sys.argv[1])
+for w in p.get("warnings") or []:
+    print(f"[doctor-deploy] {w}", file=sys.stderr)
+if p.get("skipped"):
+    print("[doctor-deploy] camadas puladas: " + ", ".join(p["skipped"]), file=sys.stderr)
+if p.get("red"):
+    print("[doctor-deploy] GATE RED: " + ", ".join(p["red"]), file=sys.stderr)
+else:
+    print("[doctor-deploy] GATE GREEN", file=sys.stderr)
+' "$layers_json"
+    exit "$lstatus"
+    ;;
   hook-one)
     sha=${1:-}
     [ -n "$sha" ] || die "hook-one exige o local_sha"
@@ -262,6 +341,6 @@ case "$cmd" in
     "$0" prepare
     ;;
   *)
-    die "uso: discover [--json] | preflight | cc | integration | prepare | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
+    die "uso: discover [--json] | preflight | cc | integration | prepare | ci [--base <ref>] [--no-quality] [--json] | check <sha> | hook-one <sha> | print-skipped | tree-clean | install-hook | needs-consent | consent <tool> <yes|no>"
     ;;
 esac

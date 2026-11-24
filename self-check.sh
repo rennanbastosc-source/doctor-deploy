@@ -528,7 +528,7 @@ cat > "$FAKE/pip-audit.js" <<'JS'
 console.error("Found 1 known vulnerability in 1 package"); process.exit(1);
 JS
 fake_bin pip-audit
-PATH="$FAKE:$PATH" layer audit red "pip-audit com uv.lock não ficou vermelho"
+( PATH="$FAKE:$PATH" layer audit red "pip-audit com uv.lock não ficou vermelho" )
 
 # base dinâmica via origin/HEAD (branch develop)
 newrepo dynrepo
@@ -656,6 +656,35 @@ console.error("1 high severity vulnerability");
 process.exit(1);
 JS
 fake_bin npm
-PATH="$FAKE:$PATH" layer audit red "audit em subpasta não rodou no cwd do subpacote"
+( PATH="$FAKE:$PATH" layer audit red "audit em subpasta não rodou no cwd do subpacote" )
+rm -f "$FAKE/npm" "$FAKE/npm.cmd" "$FAKE/npm.js"
+
+# modo CI (gate.sh ci): aceita árvore com artefato untracked, --base explícito, --no-quality e --json
+newrepo cirepo
+mkdir -p src coverage
+printf '%s\n' 'export const a = 1' > src/a.ts
+printf '%s\n' '{"scripts":{"quality":"node -e \"console.log(123)\""}}' > package.json
+git add -A && git commit -qm base && git update-ref refs/remotes/origin/main HEAD
+printf '%s\n' 'export const a = 1' 'export const b = 2' > src/a.ts
+git add -A && git commit -qm pr
+printf '%s\n' 'SF:src/a.ts' 'DA:1,1' 'DA:2,0' 'end_of_record' > coverage/lcov.info
+printf '%s\n' 'build artifact' > untracked.log
+if "$GATE" ci --base origin/main --no-quality >/dev/null 2>&1; then
+  echo "ci não ficou vermelho com hits 0 no lcov" >&2
+  exit 1
+fi
+if "$GATE" ci --base nao-existe --no-quality >/dev/null 2>&1; then
+  echo "ci aceitou --base inexistente" >&2
+  exit 1
+fi
+printf '%s\n' 'SF:src/a.ts' 'DA:1,1' 'DA:2,1' 'end_of_record' > coverage/lcov.info
+if ! "$GATE" ci --base origin/main --json > "$WORK/ci.json" 2>"$WORK/ci.err"; then
+  cat "$WORK/ci.err" >&2
+  exit 1
+fi
+"$PYTHON" -c 'import json,sys
+p = json.load(open(sys.argv[1], encoding="utf-8"))
+assert p["layers"]["diff_cover"] == "green", p' "$WORK/ci.json"
+[ ! -f "$(git rev-parse --git-dir)/doctor-deploy/receipt.json" ] || { echo "ci não deve gravar receipt.json" >&2; exit 1; }
 
 echo "self-check ok"
