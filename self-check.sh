@@ -625,4 +625,37 @@ assert "bun --bun run check && bun --bun run typecheck && bun --bun run test:cov
 assert "sem entrypoint de quality" in d["gaps"], d["gaps"]' "$WORK/disc.json"
 "$GATE" discover | grep -q "stacks: js"
 
+# monorepo: múltiplos coverages (TS + Go em subpastas), tsconfig por subpacote e audit em subpasta
+newrepo monorepo
+mkdir -p apps/web/src/services apps/web/coverage apps/api/internal/db apps/api/internal/pedido
+printf '%s\n' '{"compilerOptions":{"paths":{"@/*":["./src/*"]}}}' > apps/web/tsconfig.json
+printf '%s\n' 'export const db = {}' > apps/web/src/db.ts
+printf '%s\n' 'export const a = 1' > apps/web/src/services/a.ts
+printf 'module example.com/api\n\ngo 1.22\n' > apps/api/go.mod
+printf 'package pedido\n\nfunc Total() int { return 1 }\n' > apps/api/internal/pedido/svc.go
+git add -A && git commit -qm base && git update-ref refs/remotes/origin/main HEAD
+
+printf '%s\n' 'import { db } from "@/db"' 'export const a = () => db' > apps/web/src/services/a.ts
+printf '%s\n' 'import { a } from "@/services/a"' 'const mem = ":memory:"' > apps/web/src/services/a.test.ts
+printf 'package pedido\n\nfunc Total() int {\n\treturn 2\n}\n' > apps/api/internal/pedido/svc.go
+printf 'package pedido\n\nimport _ "github.com/DATA-DOG/go-txdb"\n' > apps/api/internal/pedido/svc_test.go
+printf '%s\n' 'SF:src/services/a.ts' 'DA:1,1' 'DA:2,1' 'end_of_record' > apps/web/coverage/lcov.info
+printf 'mode: set\nexample.com/api/internal/pedido/svc.go:3.18,5.2 1 1\n' > apps/api/coverage.out
+git add -A && git commit -qm mono
+out=$("$PYTHON" "$PY" layers --started 0)
+printf '%s\n' "$out" | grep -q '"diff_cover": "green"' || { echo "monorepo: coverages mesclados não ficaram green: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q '"integration": "green"' || { echo "monorepo: tsconfig por subpacote não resolveu: $out" >&2; exit 1; }
+
+# audit em subdiretório (apps/web/package-lock.json) roda no cwd do subpacote
+printf '%s\n' '{}' > apps/web/package-lock.json
+git add apps/web/package-lock.json && git commit -qm lock
+cat > "$FAKE/npm.js" <<'JS'
+const fs = require("fs");
+if (!fs.existsSync("package-lock.json")) { console.error("cwd errado"); process.exit(2); }
+console.error("1 high severity vulnerability");
+process.exit(1);
+JS
+fake_bin npm
+PATH="$FAKE:$PATH" layer audit red "audit em subpasta não rodou no cwd do subpacote"
+
 echo "self-check ok"
