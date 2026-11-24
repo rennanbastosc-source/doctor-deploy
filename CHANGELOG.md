@@ -9,4 +9,4 @@ Primeira versão pública.
 - Camadas do diff: diff-cover (100% de linhas e branches alteradas), tamanho, CC, mocks, integração com banco real, lock, audit e mutação.
 - Agnóstico: JS/TS, Python, Go e Rails (quality, cobertura, grafo de integração, mocks, audit e mutação por linguagem).
 - Setup guiado ([SETUP.md](SETUP.md)) a partir dos repos modelo.
-- Self-check multiplataforma e testes ponta a ponta com apps Go e Rails reais.
+- Self-check multiplataforma no CI (Ubuntu, macOS e Windows); validado ponta a ponta com apps Go e Rails reais antes da release.

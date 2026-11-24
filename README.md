@@ -74,11 +74,9 @@ O recibo vale para o commit com o mesmo conteúdo do testado, salvo `*.md`. Squa
 
 ```sh
 sh self-check.sh   # casos do recibo, hook e de todas as camadas, com ferramentas falsas onde precisa
-sh e2e/go.sh       # app Go real: go test, gremlins, govulncheck
-sh e2e/rails.sh    # app Rails real: minitest, SimpleCov, mutant, bundle-audit
 ```
 
-O CI roda o self-check em Ubuntu, macOS e Windows, o e2e de Go em Ubuntu e Windows e o de Rails em Ubuntu. O `scripts/quality.sh` da skill é o próprio self-check: ela passa pelo próprio portão.
+O CI roda o self-check em Ubuntu, macOS e Windows. O `scripts/quality.sh` da skill é o próprio self-check: ela passa pelo próprio portão. Os testes ponta a ponta com apps Go e Rails reais (ferramentas reais: go test, gremlins, govulncheck, SimpleCov, mutant, bundle-audit) ficam só na máquina do mantenedor, fora do repo e do CI, e rodam antes de cada release.
 
 ## Licença
 
