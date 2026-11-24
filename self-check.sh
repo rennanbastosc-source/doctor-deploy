@@ -330,6 +330,29 @@ printf 'package pedido\n\nfunc mock() { db, m, _ := sqlmock.New(); _ = db; _ = m
 git add internal && git commit -qm testes
 layer integration green "Go: teste txdb na pasta do pacote não cobriu o service"
 layer mocks red "Go: sqlmock não ficou vermelho"
+# mutadores falsos no PATH (sh + .cmd), em node como o Stryker falso; consentimento isolado num HOME vazio
+FAKE=$WORK/fakebin
+mkdir -p "$FAKE"
+fake_bin() {
+  printf '#!/bin/sh\nexec node "$(dirname "$0")/%s.js" "$@"\n' "$1" > "$FAKE/$1"
+  printf '@node "%%~dp0%s.js" %%*\r\n' "$1" > "$FAKE/$1.cmd"
+  chmod +x "$FAKE/$1"
+}
+cat > "$FAKE/gremlins.js" <<'JS'
+const fs = require("fs"); const a = process.argv; const o = a[a.indexOf("--output") + 1]
+const m = { type: "ARITHMETIC_BASE", status: process.env.FAKE_STATUS, line: +process.env.FAKE_LINE }
+fs.writeFileSync(o, JSON.stringify({ go_module: "example.com/loja", files: [{ file_name: "internal/pedido/service.go", mutations: [m] }] }))
+JS
+fake_bin gremlins
+mutf() { PATH="$FAKE:$PATH" HOME="$WORK/home" USERPROFILE="$WORK/home" FAKE_STATUS=$1 FAKE_LINE=$2 "$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q "\"mutation\": \"$3\"" || { echo "mutação $1 linha $2 não deu $3 ($4)" >&2; exit 1; }; }
+mutf LIVED 9 red gremlins
+case "$(uname -s)" in
+  # gremlins <= 0.6.0 no Windows marca tudo NOT COVERED: a skill pula em vez de reprovar
+  MINGW*|MSYS*|CYGWIN*) mutf "NOT COVERED" 9 skip "gremlins no Windows" ;;
+  *) mutf "NOT COVERED" 9 red gremlins ;;
+esac
+mutf KILLED 9 green gremlins
+mutf LIVED 3 green "gremlins fora do diff"
 
 # agnóstico, Rails: constantes do Zeitwerk, request spec -> controller -> service, stub do ActiveRecord, SimpleCov
 newrepo rbrepo
@@ -353,6 +376,21 @@ printf '{"RSpec":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1
 layer diff_cover red "Rails: linha nova com 0 no SimpleCov não ficou vermelha"
 printf '{"RSpec":{"coverage":{"%s/app/services/pagamentos/cobrar.rb":{"lines":[1,1,1,1,null,null,null],"branches":{"[:if, 0, 4, 6, 4, 30]":{"[:then, 1, 4, 6, 4, 20]":0}}}}}}' "$R" > coverage/.resultset.json
 layer diff_cover red "Rails: branch não exercitada no SimpleCov não ficou vermelha"
+# mutant falso via `bundle exec mutant run --since`: imprime a linha "evil:" de mutante vivo
+printf 'GEM\n  specs:\n    mutant (0.17.1)\n' > Gemfile.lock
+printf 'usage: opensource\nintegration:\n  name: minitest\n' > .mutant.yml
+git add -A && git commit -qm mutant
+cat > "$FAKE/bundle.js" <<'JS'
+if (process.env.FAKE_STATUS === "evil") {
+  console.log(`evil:Pagamentos::Cobrar#call:${process.cwd()}/app/services/pagamentos/cobrar.rb:3:3f2a1`)
+  process.exit(1)
+}
+JS
+fake_bin bundle
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) mutf evil 0 skip "mutant no Windows (sem fork)" ;;
+  *) mutf evil 0 red mutant; mutf killed 0 green mutant ;;
+esac
 
 # hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
 mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"

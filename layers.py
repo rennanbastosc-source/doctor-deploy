@@ -61,7 +61,7 @@ def receipt_path():
 
 
 def consent_path():
-    return Path.home() / ".config" / "doctor-deploy" / "consent.json"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "doctor-deploy" / "consent.json"
 
 
 def quality_skip_allowed():
@@ -421,7 +421,8 @@ AR_METHODS = (
     r"find|find_by!?|where|create!?|save!?|update!?|update_all|destroy!?|delete_all|all|first|last"
     r"|pluck|exists\?|transaction|insert_all|upsert_all|find_or_create_by!?"
 )
-MOCK_DB_LINE = re.compile(rf"\breceive(?:_messages)?\(\s*:(?:{AR_METHODS})\b|\bsqlmock\.New")
+# rspec-mocks receive(:x), mocha stubs/expects(:x), minitest-mock stub/expect(:x).
+MOCK_DB_LINE = re.compile(rf"(?:\breceive(?:_messages)?|\.(?:stubs?|expects?))\(\s*:(?:{AR_METHODS})(?![\w?!])|\bsqlmock\.New")
 # Ruby: allow(Pedido) / expect(Pagamentos::Cobrar).to receive -> constante própria mockada.
 MOCK_RB = re.compile(r"\b(?:allow|expect)(?:_any_instance_of)?\(\s*([A-Z]\w*(?:::[A-Z]\w*)*)\s*\)\.to\s+receive")
 
@@ -798,6 +799,26 @@ def deps_layer(base, warnings):
     return "red" if red else "green"
 
 
+AUDIT_TIMEOUT = 120
+# Achado real: o resumo "N vulnerabilities" (npm & cia., govulncheck) ou o "Vulnerabilities found!" do bundle-audit.
+AUDIT_FINDINGS = re.compile(r"\d+\s+vulnerabilit|Vulnerabilities found", re.IGNORECASE)
+AUDIT_NETWORK = re.compile(
+    r"\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|no such host|dial tcp|getaddrinfo|SocketError"
+    r"|Could not fetch|unable to access|Failed to connect|Could not connect|failed to update)\b",
+    re.IGNORECASE,
+)
+
+
+def audit_status(run):
+    """'green', 'red' ou 'network'. O advisory do npm cita "network" no texto: com achado, é vermelho."""
+    if run.returncode == 0:
+        return "green"
+    out = run.stdout + run.stderr
+    if not AUDIT_FINDINGS.search(out) and AUDIT_NETWORK.search(out):
+        return "network"
+    return "red"
+
+
 def audit_layer(base, warnings):
     if not base:
         warnings.append("audit: sem base, skip")
@@ -818,22 +839,20 @@ def audit_layer(base, warnings):
         if not exe:
             warnings.append(f"audit: {cmd[0]} ausente, skip")
             continue
-        ran = True
         # No Windows `npm` é um .cmd: `which` resolve, mas CreateProcess com o nome
         # nu falha (WinError 2). Executa o caminho resolvido.
-        run = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=60)
-        # A saída do `npm audit` cita "network" no texto do próprio advisory; o sinal
-        # de rede é o erro em stderr SEM o resumo "N vulnerabilities". Com resumo, o
-        # retorno não-zero é achado real e o gate fica vermelho.
-        has_findings = re.search(r"\d+\s+vulnerabilit", run.stdout, re.IGNORECASE) is not None
-        network_failure = (not has_findings) and re.search(
-            r"\b(ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|no such host|dial tcp|getaddrinfo|SocketError|Could not fetch)\b",
-            run.stderr, re.IGNORECASE,
-        ) is not None
-        if run.returncode != 0 and network_failure:
+        try:
+            run = subprocess.run([exe, *cmd[1:]], capture_output=True, text=True, timeout=AUDIT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            warnings.append(f"audit: {cmd[0]} timeout {AUDIT_TIMEOUT}s, skip")
+            continue
+        status = audit_status(run)
+        if status == "network":
             warnings.append(f"audit: {cmd[0]} skip (rede)")
-        elif run.returncode != 0:
-            warnings.append(f"audit: {cmd[0]} high/critical")
+            continue
+        ran = True
+        if status == "red":
+            warnings.append(f"audit: {cmd[0]} achou vulnerabilidade (npm/pnpm/yarn: high ou critical)")
             red = True
     if red:
         return "red"
@@ -866,37 +885,127 @@ def stryker_survivors(repo, added):
     return out
 
 
+JS_EXT = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+# mutant: "evil:Pagamentos::Cobrar#call:/abs/app/services/pagamentos/cobrar.rb:7:3f2a1" = mutante vivo.
+MUTANT_EVIL = re.compile(r"^evil:(\S+?):(.+\.rb):(\d+):[0-9a-f]+$", re.MULTILINE)
+
+
+def diff_added(base, exts):
+    """{fonte do diff com essas extensões: linhas adicionadas}."""
+    added = {p: set(added_lines(base, p)) for p in changed_paths(name_status(base)) if is_source(p) and Path(p).suffix in exts}
+    return {p: lines for p, lines in added.items() if lines}
+
+
+def run_mutator(cmd, name, warnings):
+    """CompletedProcess, ou None (com aviso) se estourou o tempo."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=MUTATION_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        warnings.append(f"mutação: {name} timeout {MUTATION_TIMEOUT}s, skip")
+        return None
+
+
+def report_survivors(survivors, warnings):
+    for where, what in survivors:
+        warnings.append(f"mutação: {where} {what} sobreviveu (nenhum teste quebrou)")
+    return "red" if survivors else "green"
+
+
+def mutate_stryker(repo, base, warnings):
+    exe = stryker_exe()
+    if exe is None:
+        return None
+    added = diff_added(base, JS_EXT)
+    if not added:
+        return "green"
+    STRYKER_REPORT.unlink(missing_ok=True)
+    run = run_mutator([exe, "run", "--mutate", ",".join(sorted(added)), "--reporters", "json"], "Stryker", warnings)
+    if run is None:
+        return "skip"
+    if not STRYKER_REPORT.exists():
+        warnings.append(f"mutação: Stryker saiu {run.returncode} sem relatório, skip")
+        return "skip"
+    return report_survivors([(f"{p}:{line}", op) for p, line, op in stryker_survivors(repo, added)], warnings)
+
+
+def mutate_gremlins(repo, base, warnings):
+    exe = shutil.which("gremlins")
+    if not exe or not Path("go.mod").exists():
+        return None
+    added = diff_added(base, {".go"})
+    if not added:
+        return "green"
+    mutants = gremlins_report(exe, repo, base, warnings)
+    if mutants is None:
+        return "skip"
+    if os.name == "nt" and mutants and all(m.get("status") == "NOT COVERED" for _, m in mutants):
+        # gremlins <= 0.6.0 no Windows: chave da cobertura com "\" e posição com "/"; tudo vira NOT COVERED.
+        warnings.append("mutação: gremlins no Windows marcou tudo NOT COVERED (bug do gremlins com caminho \\), skip; o diff-cover cobre as linhas sem teste")
+        return "skip"
+    return report_survivors(gremlins_live(mutants, added), warnings)
+
+
+def gremlins_report(exe, repo, base, warnings):
+    """[(arquivo, mutante)] do relatório JSON, ou None (com aviso) se não houve relatório."""
+    out = git_dir() / "doctor-deploy" / "gremlins.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    # Folga de tempo: com o coeficiente padrão, máquina carregada marca mutante como TIMED OUT (conta como morto).
+    run = run_mutator([exe, "unleash", "--diff", base, "--output", str(out), "--timeout-coefficient", "30", "-s"], "gremlins", warnings)
+    if run is None:
+        return None
+    if not out.exists():
+        warnings.append(f"mutação: gremlins saiu {run.returncode} sem relatório, skip")
+        return None
+    return [(norm(f.get("file_name") or "", repo), m) for f in (load_json(out) or {}).get("files") or [] for m in f.get("mutations") or []]
+
+
+def gremlins_live(mutants, added):
+    return [(f"{p}:{m.get('line')}", m.get("type") or "?") for p, m in mutants
+            if m.get("status") in {"LIVED", "NOT COVERED"} and m.get("line") in added.get(p, ())]
+
+
+def mutant_configured():
+    lock = Path("Gemfile.lock")
+    return lock.exists() and "mutant" in lock.read_text(errors="replace") and any(Path(p).exists() for p in (".mutant.yml", "config/mutant.yml"))
+
+
+def mutate_mutant(repo, base, warnings):
+    if not mutant_configured():
+        return None
+    if os.name == "nt":
+        warnings.append("mutação: mutant usa fork(), que o Windows não tem; skip")
+        return "skip"
+    bundle = shutil.which("bundle")
+    if not bundle:
+        warnings.append("mutação: mutant configurado, mas sem bundle no PATH; skip")
+        return "skip"
+    # --since: o próprio mutant só seleciona os métodos tocados desde a base. Granularidade: método.
+    run = run_mutator([bundle, "exec", "mutant", "run", "--since", base], "mutant", warnings)
+    if run is None:
+        return "skip"
+    evil = [(f"{norm(path, repo)}:{line} {subject}", "mutante") for subject, path, line in MUTANT_EVIL.findall(run.stdout)]
+    if run.returncode != 0 and not evil:
+        tail = (run.stderr or run.stdout).strip().splitlines()[-1:] or [""]
+        warnings.append(f"mutação: mutant saiu {run.returncode} sem mutante vivo ({tail[0][:120]}), skip")
+        return "skip"
+    return report_survivors(evil, warnings)
+
+
 def mutation_layer(repo, base, warnings):
     consent = load_json(consent_path()) or {}
     if consent.get("mutation") == "no":
         warnings.append("mutação: recusada, skip")
         return "skip"
-    exe = stryker_exe()
-    if exe is None:
-        # shortcut: só Stryker (JS/TS, os dois repos modelo); mutmut/cargo-mutants entram quando houver repo Python/Rust.
-        warnings.append("mutação: sem Stryker em node_modules, skip")
-        return "skip"
     if not base:
         warnings.append("mutação: sem base, skip")
         return "skip"
-    added = {p: set(added_lines(base, p)) for p in changed_paths(name_status(base)) if is_source(p) and Path(p).suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}}
-    added = {p: lines for p, lines in added.items() if lines}
-    if not added:
-        return "green"
-    STRYKER_REPORT.unlink(missing_ok=True)
-    cmd = [exe, "run", "--mutate", ",".join(sorted(added)), "--reporters", "json"]
-    try:
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=MUTATION_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        warnings.append(f"mutação: timeout {MUTATION_TIMEOUT}s, skip")
-        return "skip"
-    if not STRYKER_REPORT.exists():
-        warnings.append(f"mutação: Stryker saiu {run.returncode} sem relatório, skip")
-        return "skip"
-    survivors = stryker_survivors(repo, added)
-    for path, line, mutator in survivors:
-        warnings.append(f"mutação: {path}:{line} {mutator} sobreviveu (nenhum teste quebrou)")
-    return "red" if survivors else "green"
+    for mutate in (mutate_stryker, mutate_gremlins, mutate_mutant):
+        result = mutate(repo, base, warnings)
+        if result is not None:
+            return result
+    warnings.append("mutação: sem mutador (Stryker em node_modules, gremlins com go.mod, mutant com .mutant.yml), skip")
+    return "skip"
 
 
 def cmd_layers(started):
@@ -992,7 +1101,8 @@ def needs_consent():
     tools = []
     if not shutil.which("lizard") and "lizard" not in consent:
         tools.append("lizard")
-    if stryker_exe() and "mutation" not in consent:
+    has_mutator = stryker_exe() or (shutil.which("gremlins") and Path("go.mod").exists()) or mutant_configured()
+    if has_mutator and "mutation" not in consent:
         tools.append("mutation")
     return tools
 
