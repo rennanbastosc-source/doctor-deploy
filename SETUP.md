@@ -54,7 +54,9 @@ Cobertura mede execução, não verificação. Um teste que mocka o banco execut
 - **Mock só na fronteira:** rede e SaaS de terceiros, relógio, aleatoriedade, runtime do framework (`next/navigation`, `next/cache`), toasts.
 - **Cada bug de produção corrigido ganha um teste que falha sem a correção.**
 
-A skill cobra isso em duas camadas: `mocks` (linhas adicionadas em teste que mockam o banco sem banco real no arquivo, ou o próprio módulo testado, são vermelho; outro módulo próprio é aviso) e `integration` (módulo tocado sem teste de integração é vermelho).
+A skill cobra isso em três camadas: `mocks` (linhas adicionadas em teste que mockam o banco sem banco real no arquivo, ou o próprio módulo testado, são vermelho; outro módulo próprio é aviso), `integration` (módulo tocado sem teste de integração é vermelho) e `mutation` (a prova acima, automática).
+
+**Mutação (opcional, com o consentimento `gate.sh consent mutation yes`):** instale o Stryker como dependência de dev do projeto (`@stryker-mutator/core` e o runner, `@stryker-mutator/vitest-runner` no Vitest) com um `stryker.config.json` que aponte o runner. A camada roda `stryker run --mutate <fontes JS/TS do diff> --reporters json` e lê `reports/mutation/mutation.json` (ponha `reports/` no `.gitignore`). Mutante `Survived` ou `NoCoverage` numa linha adicionada é vermelho: o código mudou e nenhum teste quebrou. Conserte com uma asserção que pegue a mudança. Mutante equivalente (a mudança não altera o comportamento) sai com `// Stryker disable next-line <Operador>: <motivo>` na linha, que fica no diff para a review. Timeout de 180s é skip barulhento: diff grande demais para mutar no push.
 
 ## 5. Hook
 

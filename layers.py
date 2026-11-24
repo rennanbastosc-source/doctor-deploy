@@ -677,27 +677,63 @@ def audit_layer(base, warnings):
     return "green" if ran else "skip"
 
 
-def mutation_layer(warnings):
+STRYKER_REPORT = Path("reports/mutation/mutation.json")
+MUTATION_TIMEOUT = 180
+
+
+def stryker_exe():
+    # No Windows o bin é um shim .cmd; o nome nu falha no CreateProcess.
+    bin_dir = Path("node_modules/.bin")
+    for name in ("stryker.cmd", "stryker") if os.name == "nt" else ("stryker",):
+        if (bin_dir / name).exists():
+            return str((bin_dir / name).resolve())
+    return None
+
+
+def stryker_survivors(repo, added):
+    """[(arquivo, linha, operador)] de mutantes vivos (Survived/NoCoverage) em linha adicionada."""
+    report = load_json(STRYKER_REPORT) or {}
+    out = []
+    for name, data in (report.get("files") or {}).items():
+        path = norm(name, repo)
+        for mutant in data.get("mutants") or []:
+            line = ((mutant.get("location") or {}).get("start") or {}).get("line")
+            if mutant.get("status") in {"Survived", "NoCoverage"} and line in added.get(path, ()):
+                out.append((path, line, mutant.get("mutatorName") or "?"))
+    return out
+
+
+def mutation_layer(repo, base, warnings):
     consent = load_json(consent_path()) or {}
     if consent.get("mutation") == "no":
         warnings.append("mutação: recusada, skip")
         return "skip"
-    cmd = None
-    if shutil.which("cargo-mutants") and Path("Cargo.toml").exists():
-        cmd = ["cargo-mutants", "--in-diff"]
-    elif shutil.which("mutmut") and Path("pyproject.toml").exists():
-        cmd = ["mutmut", "run"]
-    elif Path("node_modules/.bin/stryker").exists():
-        cmd = ["node_modules/.bin/stryker", "run"]
-    if cmd is None:
-        warnings.append("mutação: sem mutador, skip")
+    exe = stryker_exe()
+    if exe is None:
+        # shortcut: só Stryker (JS/TS, os dois repos modelo); mutmut/cargo-mutants entram quando houver repo Python/Rust.
+        warnings.append("mutação: sem Stryker em node_modules, skip")
         return "skip"
+    if not base:
+        warnings.append("mutação: sem base, skip")
+        return "skip"
+    added = {p: set(added_lines(base, p)) for p in changed_paths(name_status(base)) if is_source(p) and Path(p).suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}}
+    added = {p: lines for p, lines in added.items() if lines}
+    if not added:
+        return "green"
+    STRYKER_REPORT.unlink(missing_ok=True)
+    cmd = [exe, "run", "--mutate", ",".join(sorted(added)), "--reporters", "json"]
     try:
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        warnings.append(f"mutação: report exit {run.returncode} (nunca vermelho)")
+        run = subprocess.run(cmd, capture_output=True, text=True, timeout=MUTATION_TIMEOUT)
     except subprocess.TimeoutExpired:
-        warnings.append("mutação: timeout 180s, skip")
-    return "skip"
+        warnings.append(f"mutação: timeout {MUTATION_TIMEOUT}s, skip")
+        return "skip"
+    if not STRYKER_REPORT.exists():
+        warnings.append(f"mutação: Stryker saiu {run.returncode} sem relatório, skip")
+        return "skip"
+    survivors = stryker_survivors(repo, added)
+    for path, line, mutator in survivors:
+        warnings.append(f"mutação: {path}:{line} {mutator} sobreviveu (nenhum teste quebrou)")
+    return "red" if survivors else "green"
 
 
 def cmd_layers(started):
@@ -713,7 +749,7 @@ def cmd_layers(started):
         "integration": integration_layer(repo, base, warnings),
         "deps": deps_layer(base, warnings),
         "audit": audit_layer(base, warnings),
-        "mutation": mutation_layer(warnings),
+        "mutation": mutation_layer(repo, base, warnings),
     }
     red = [name for name, status in layers.items() if status == "red"]
     skipped = [name for name, status in layers.items() if status == "skip"]
@@ -793,7 +829,7 @@ def needs_consent():
     tools = []
     if not shutil.which("lizard") and "lizard" not in consent:
         tools.append("lizard")
-    if consent.get("mutation") != "no" and not any(shutil.which(name) for name in ("mutmut", "cargo-mutants")) and "mutation" not in consent:
+    if stryker_exe() and "mutation" not in consent:
         tools.append("mutation")
     return tools
 

@@ -279,6 +279,35 @@ if "$GATE" integration >/dev/null 2>&1; then
   exit 1
 fi
 
+# mutação: Stryker falso escreve o relatório; mutante vivo em linha alterada é vermelho
+mkdir -p "$TMP/mrepo" && cd "$TMP/mrepo"
+git init -b main >/dev/null
+git config user.email t@example.com
+git config user.name t
+printf '%s\n' node_modules reports > .gitignore
+mkdir -p src node_modules/.bin
+printf '%s\n' 'export const a = 1' 'export const b = 2' 'export const c = 3' > src/calc.ts
+git add -A && git commit -qm base >/dev/null
+git update-ref refs/remotes/origin/main HEAD
+printf '%s\n' 'export const a = 1' 'export const b = (x: number) => x > 2' 'export const c = 3' > src/calc.ts
+git add -A && git commit -qm muda >/dev/null
+cat > node_modules/.bin/stryker.js <<'JS'
+const fs = require("fs"); const a = process.argv; const f = a[a.indexOf("--mutate") + 1].split(",")[0]
+fs.mkdirSync("reports/mutation", { recursive: true })
+const m = { status: process.env.FAKE_STATUS, mutatorName: "EqualityOperator", location: { start: { line: +process.env.FAKE_LINE } } }
+fs.writeFileSync("reports/mutation/mutation.json", JSON.stringify({ files: { [f]: { mutants: [m] } } }))
+JS
+printf '#!/bin/sh\nexec node "$(dirname "$0")/stryker.js" "$@"\n' > node_modules/.bin/stryker
+printf '@node "%%~dp0stryker.js" %%*\r\n' > node_modules/.bin/stryker.cmd
+chmod +x node_modules/.bin/stryker
+# consentimento é global da máquina: isola num HOME vazio (USERPROFILE no Windows)
+mut() { HOME="$WORK/home" USERPROFILE="$WORK/home" FAKE_STATUS=$1 FAKE_LINE=$2 "$PYTHON" "$PY" layers --started 0 2>/dev/null | grep -q "\"mutation\": \"$3\"" || { echo "mutação $1 na linha $2 não deu $3" >&2; exit 1; }; }
+mut Survived 2 red
+mut NoCoverage 2 red
+mut Killed 2 green
+mut Ignored 2 green
+mut Survived 1 green
+
 # hook de projeto que delega (scripts/pre-push.sh, como frota-impacto e erp-2f)
 mkdir -p "$TMP/hrepo" && cd "$TMP/hrepo"
 git init -b main >/dev/null

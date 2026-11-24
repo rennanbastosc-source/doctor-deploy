@@ -26,7 +26,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 0. `gate.sh preflight` — confere o repo atual sem rodar nada: entrypoint de quality, hook, base, artefato de cobertura e consentimentos. Só a falta de quality (sem `doctor-deploy.allowNoQuality`) reprova; o resto é aviso, porque no portão vira skip. **Reprovou, ou avisou de hook ou cobertura na primeira vez neste repo: leia [SETUP.md](SETUP.md) e monte o setup antes de seguir.** O setup termina quando o preflight sai verde e um `quality` real gerou o lcov.
 1. `gate.sh install-hook` — só cria o shim se `.git/hooks/pre-push` não existir. Hook de projeto não se sobrescreve.
-2. `gate.sh needs-consent` — se imprimir `NEED_CONSENT`, pergunte uma vez. `gate.sh consent lizard yes|no` e `gate.sh consent mutation yes|no`. `yes` não instala sozinho: instale no usuário (`pipx` ou `uv tool`), grave a versão no consentimento, não atualize no portão. Sem `pipx`/`uv`, diga isso e deixe a camada em skip. Nunca vire dependência do repo.
+2. `gate.sh needs-consent` — se imprimir `NEED_CONSENT`, pergunte uma vez. `gate.sh consent lizard yes|no`: `yes` não instala sozinho: instale no usuário (`pipx` ou `uv tool`), grave a versão no consentimento, não atualize no portão. Sem `pipx`/`uv`, diga isso e deixe a camada em skip. Lizard nunca vira dependência do repo. `gate.sh consent mutation yes|no` só é perguntado quando o projeto já tem o Stryker (dependência de dev do projeto, decisão do dono no setup, [SETUP.md](SETUP.md) §4); `no` desliga a camada nesta máquina.
 
 ## Preparo
 
@@ -62,7 +62,7 @@ Deleção de branch não passa pelo portão e não desliga o portão dos outros 
 | Integração | service, action, rota, router, controller ou repositório tocado sem teste que o importe e use banco real; componente ou hook tocado sem teste que renderize e interaja | sem base |
 | Lock | manifest da raiz mudou no diff e nenhum lock correspondente mudou | sem base |
 | Audit | high/critical quando o lock mudou e a ferramenta existe | ferramenta ausente, rede, lock intocado |
-| Mutação | nunca | sem mutador, recusa, ou timeout de 180s. O resultado vai no aviso, não no vermelho |
+| Mutação | mutante vivo (`Survived`/`NoCoverage`) do Stryker numa linha adicionada de fonte JS/TS. Equivalente sai com `// Stryker disable next-line <Operador>: <motivo>` | sem Stryker em `node_modules`, recusa, sem base, sem relatório, ou timeout de 180s |
 
 No diff a barra é 100% das linhas e branches que o relatório lista: hits 0 ou branch não exercitada é vermelho. Linha que o relatório não lista não é executável comprovada. O piso global é do projeto (`thresholds`), medido no setup, e só sobe.
 
