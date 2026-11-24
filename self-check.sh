@@ -57,12 +57,23 @@ SHA_MD=$(git rev-parse HEAD)
 printf '%s %s %s %s\n' refs/heads/main "$SHA_MD" refs/heads/main "$SHA" | "$HOOK"
 test "$(stamp_n)" -eq 1
 
+# squash: commit órfão (não descende do testado) com o mesmo código + *.md
+"$GATE" check "$(git commit-tree "$SHA_MD^{tree}" -m squash)" >/dev/null
+
 printf '%s\n' 'export const b = 1' > src/b.ts
 git add src/b.ts
 git commit -m 'docs: forjado' >/dev/null
 SHA_TS=$(git rev-parse HEAD)
 if "$GATE" check "$SHA_TS" >/dev/null 2>&1; then
   echo "delta .ts não invalidou" >&2
+  exit 1
+fi
+if "$GATE" check "$(git commit-tree "$SHA_TS^{tree}" -m squash)" >/dev/null 2>&1; then
+  echo "squash com .ts não invalidou" >&2
+  exit 1
+fi
+if "$GATE" check 0123456789abcdef0123456789abcdef01234567 >/dev/null 2>&1; then
+  echo "SHA inexistente passou no check" >&2
   exit 1
 fi
 printf '%s %s %s %s\n' refs/heads/main "$SHA_TS" refs/heads/main "$SHA_MD" | "$HOOK"

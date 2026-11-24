@@ -6,7 +6,7 @@ description: >-
   "commita e pusha", "mergear", "sobe pra main", "prepara o merge",
   "prepara a PR" ou "deixa pronto pro merge". No preparo roda o portão uma
   vez e grava o verde. No push/merge não repete se o SHA empurrado for o
-  testado ou descendente só com *.md. Não use para commit sem push.
+  testado ou só difere dele em *.md. Não use para commit sem push.
 ---
 
 # Doctor Deploy
@@ -42,7 +42,7 @@ O portão existe para não subir vermelho. Repetir um verde já gravado é o bug
 
 `gate.sh check <sha-que-vai-subir>`
 
-Válido se o recibo está verde, a versão bate, o SHA é o testado ou descendente linear, e o delta é só `*.md`. A mensagem do commit não conta: `docs:` com `.ts` ou `.json` invalida. O risco aceito é um `.md` que a suíte lê (no frota, `docs/invariantes` vs `mapa-invariantes.test.ts`) passar sem rerodar.
+Válido se o recibo está verde, a versão bate e o conteúdo do SHA é o testado, salvo `*.md`. Ancestralidade não conta: merge, squash e rebase do commit testado passam; se a base andou, o código alheio aparece no delta e invalida. A mensagem do commit não conta: `docs:` com `.ts` ou `.json` invalida. O risco aceito é um `.md` que a suíte lê (no frota, `docs/invariantes` vs `mapa-invariantes.test.ts`) passar sem rerodar.
 
 Se o check sair 0, faça o push ou o merge. Não chame quality. O hook faz a mesma leitura e sai 0.
 

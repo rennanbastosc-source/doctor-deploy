@@ -750,11 +750,12 @@ def cmd_check(sha):
     if "quality" in (receipt.get("skipped") or []) and not quality_skip_allowed():
         print("[doctor-deploy] recibo sem quality e repo sem doctor-deploy.allowNoQuality", file=sys.stderr)
         return 1
+    # Conteúdo, não ancestralidade: squash e rebase do testado passam; código alheio vira delta.
     tested = receipt.get("tested_sha") or ""
-    if git("merge-base", "--is-ancestor", tested, sha, check=False).returncode != 0:
-        print("[doctor-deploy] SHA não descende do recibo", file=sys.stderr)
-        return 1
     diff = git("diff", "--name-status", "-M", tested, sha, check=False)
+    if not tested or diff.returncode != 0:
+        print("[doctor-deploy] SHA testado ou a subir não existe aqui", file=sys.stderr)
+        return 1
     for line in diff.stdout.splitlines():
         paths = line.split("\t")[1:]
         if not paths or any(not is_md(path) for path in paths):
