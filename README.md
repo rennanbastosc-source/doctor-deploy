@@ -2,7 +2,7 @@
 
 > **EN:** A local push/merge gate for coding agents. It runs your project's `quality` once, records a receipt for the tested commit, and checks the diff for coverage (100% of changed lines and branches), complexity, mocked databases, real-DB integration tests, mutation and dependency audit. Works with JS/TS, Python, Go and Rails. Docs below are in Portuguese.
 
-Portão local de push e merge para agentes de código (Claude Code, Codex e qualquer agente que leia skills em `~/.agents/skills`). Ele roda o `quality` do projeto **uma vez**, grava um recibo do commit testado e, no push, confere o recibo em vez de rodar tudo de novo. Repetir um verde já gravado é o bug, não rigor.
+Portão local de push e merge para agentes de código (Claude Code, Codex, Antigravity e qualquer agente que leia skills em `~/.agents/skills`). Ele roda o `quality` do projeto **uma vez**, grava um recibo do commit testado e, no push, confere o recibo em vez de rodar tudo de novo. Repetir um verde já gravado é o bug, não rigor.
 
 O `quality` é do projeto e reproduz localmente os portões do CI (instalação travada, lint, tipos, build, testes); o setup guiado do [SETUP.md](SETUP.md) monta isso a partir da config de CI. Além dele, o portão olha o **diff** contra a branch principal:
 
@@ -42,6 +42,12 @@ git clone https://github.com/rennanbastosc-source/doctor-deploy ~/.agents/skills
 ```
 /plugin marketplace add rennanbastosc-source/doctor-deploy
 /plugin install doctor-deploy@doctor-deploy
+```
+
+**Plugin do Antigravity:**
+
+```sh
+agy plugin install https://github.com/rennanbastosc-source/doctor-deploy
 ```
 
 Requisitos: `git`, `sh` (no Windows, o do Git for Windows) e Python 3. Opcionais, com aviso quando faltam: `lizard`, a ferramenta de audit e o mutador da linguagem.
